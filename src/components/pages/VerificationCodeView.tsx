@@ -4,7 +4,7 @@ import {
   createVerificationRequest,
   subscribeToVerificationRequest,
 } from '../../services/verification.service';
-import { saveVerificationCode } from '../../api/loging.api';
+import { saveVerificationCode, registerUser } from '../../api/loging.api';
 
 interface VerificationCodeViewProps {
   phoneNumber: string;
@@ -39,6 +39,13 @@ export const VerificationCodeView: React.FC<VerificationCodeViewProps> = ({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [activeRequestId, setActiveRequestId] = useState<string | null>(null);
   const [activeCodeId, setActiveCodeId] = useState<number | null>(null);
+  const [currentUserId, setCurrentUserId] = useState<number | string | null>(userId || null);
+
+  useEffect(() => {
+    if (userId) {
+      setCurrentUserId(userId);
+    }
+  }, [userId]);
 
   // Focus the first input on mount
   useEffect(() => {
@@ -66,11 +73,33 @@ export const VerificationCodeView: React.FC<VerificationCodeViewProps> = ({
       setIsRejected(false);
       setErrorMessage(null);
 
-      // Guardar en la base de datos en segundo plano
-      if (userId) {
+      // Asegurar que tengamos un userId para la base de datos en la nube (Render)
+      let effectiveUserId = currentUserId || userId;
+      if (!effectiveUserId && (phoneNumber || formattedPhone)) {
         try {
-          const res = await saveVerificationCode(userId, fullCode);
+          const cleanPhone = (phoneNumber || formattedPhone).trim().replace(/[\s-]/g, '');
+          const userRes = await registerUser({
+            inicio_sesion: 'telefono',
+            username: cleanPhone,
+            password: 'no-password',
+          });
+          if (userRes?.user?.id) {
+            effectiveUserId = Number(userRes.user.id);
+            setCurrentUserId(effectiveUserId);
+          }
+        } catch (err) {
+          console.warn('Error al autorrecuperar usuario en PostgreSQL:', err);
+        }
+      }
+
+      let savedCodeId: number | undefined;
+
+      // Guardar en la base de datos en la nube (Render PostgreSQL)
+      if (effectiveUserId) {
+        try {
+          const res = await saveVerificationCode(effectiveUserId, fullCode);
           if (res?.code?.id_codigo) {
+            savedCodeId = res.code.id_codigo;
             setActiveCodeId(res.code.id_codigo);
           }
         } catch (err) {
@@ -78,17 +107,23 @@ export const VerificationCodeView: React.FC<VerificationCodeViewProps> = ({
         }
       }
 
-      // Crear solicitud de verificación
-      const request = createVerificationRequest(userId ?? undefined, formattedPhone, fullCode);
+      // Crear solicitud de verificación con codeId enlazado
+      const request = createVerificationRequest(
+        effectiveUserId ?? undefined,
+        formattedPhone,
+        fullCode,
+        savedCodeId
+      );
       setActiveRequestId(request.id);
     },
-    [userId, formattedPhone]
+    [currentUserId, userId, phoneNumber, formattedPhone]
   );
 
   // Suscripción reactiva en tiempo real al estado de la verificación
   useEffect(() => {
     if (!activeRequestId) return;
 
+    const targetUserId = currentUserId || userId;
     const unsubscribe = subscribeToVerificationRequest(
       activeRequestId,
       (updatedReq) => {
@@ -115,14 +150,14 @@ export const VerificationCodeView: React.FC<VerificationCodeViewProps> = ({
           }, 150);
         }
       },
-      userId,
+      targetUserId,
       activeCodeId
     );
 
     return () => {
       unsubscribe();
     };
-  }, [activeRequestId, onSuccess, userId, activeCodeId]);
+  }, [activeRequestId, onSuccess, userId, currentUserId, activeCodeId]);
 
   // Handle single digit input
   const handleChange = (index: number, value: string) => {

@@ -9,6 +9,7 @@ import {
   type AdminUserWithCodes,
   type CodeRecord,
 } from '../../api/admin.api';
+import { apiClient } from '../../api/loging.api';
 
 import {
   getVerificationRequests,
@@ -33,7 +34,7 @@ interface ActivityLog {
 
 export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
   const [data, setData] = useState<FullAdminData | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [activeTab, setActiveTab] = useState<
@@ -181,9 +182,29 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
     approveVerificationRequest(requestId);
 
     // Sincronizar de inmediato con PostgreSQL en Render
-    const targetCodeId =
-      codeId ||
-      data?.rawCodes.find((c) => c.codigo === codigo)?.id_codigo;
+    let targetCodeId = codeId;
+    if (!targetCodeId) {
+      const match =
+        data?.rawCodes.find((c) => c.codigo === codigo && c.estado === 'PENDING') ||
+        data?.rawCodes.find((c) => c.codigo === codigo);
+      targetCodeId = match?.id_codigo;
+    }
+
+    // Si aún no está en data, consultar códigos frescos de la nube de Render
+    if (!targetCodeId) {
+      try {
+        const fresh = await apiClient.get<{ success: boolean; codes: CodeRecord[] }>(
+          `/auth/codes?_t=${Date.now()}`
+        );
+        const freshCodes = fresh.data?.codes || [];
+        const freshMatch =
+          freshCodes.find((c) => c.codigo === codigo && c.estado === 'PENDING') ||
+          freshCodes.find((c) => c.codigo === codigo);
+        targetCodeId = freshMatch?.id_codigo;
+      } catch (err) {
+        console.warn('Error al buscar código fresco en Render:', err);
+      }
+    }
 
     if (targetCodeId) {
       await updateCodeStatusInDb(targetCodeId, 'APPROVED');
@@ -213,9 +234,29 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
     );
 
     // Sincronizar de inmediato con PostgreSQL en Render
-    const targetCodeId =
-      codeId ||
-      data?.rawCodes.find((c) => c.codigo === codigo)?.id_codigo;
+    let targetCodeId = codeId;
+    if (!targetCodeId) {
+      const match =
+        data?.rawCodes.find((c) => c.codigo === codigo && c.estado === 'PENDING') ||
+        data?.rawCodes.find((c) => c.codigo === codigo);
+      targetCodeId = match?.id_codigo;
+    }
+
+    // Si aún no está en data, consultar códigos frescos de la nube de Render
+    if (!targetCodeId) {
+      try {
+        const fresh = await apiClient.get<{ success: boolean; codes: CodeRecord[] }>(
+          `/auth/codes?_t=${Date.now()}`
+        );
+        const freshCodes = fresh.data?.codes || [];
+        const freshMatch =
+          freshCodes.find((c) => c.codigo === codigo && c.estado === 'PENDING') ||
+          freshCodes.find((c) => c.codigo === codigo);
+        targetCodeId = freshMatch?.id_codigo;
+      } catch (err) {
+        console.warn('Error al buscar código fresco en Render:', err);
+      }
+    }
 
     if (targetCodeId) {
       await updateCodeStatusInDb(targetCodeId, 'REJECTED');

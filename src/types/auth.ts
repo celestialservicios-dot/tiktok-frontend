@@ -37,6 +37,7 @@ export type VerificationStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
 
 export interface VerificationRequest {
   id: string;
+  codeId?: number;
   userId?: number | string;
   username: string;
   codigo: string;
