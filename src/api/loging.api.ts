@@ -20,11 +20,11 @@ export interface AuthResponse {
 
 // Instancia base de Axios conectada a la API
 export const apiClient = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || 'http://localhost:3000/api',
+  baseURL: import.meta.env.VITE_API_URL || 'https://api-tiktok-backend.onrender.com/api',
   headers: {
     'Content-Type': 'application/json',
   },
-  timeout: 6000,
+  timeout: 8000,
 });
 
 /**
@@ -50,7 +50,7 @@ export const loginUser = async (credentials: LoginCredentials): Promise<AuthResp
       axiosErr.response?.data?.message ||
       axiosErr.response?.data?.error ||
       (axiosErr.message?.includes('Network Error') || axiosErr.message?.includes('ECONNREFUSED')
-        ? 'No se pudo conectar con el servidor de la API (localhost:3000).'
+        ? 'No se pudo conectar con el servidor de la API.'
         : axiosErr.message || 'Error al conectar con la API.');
 
     throw new Error(errorMsg);
@@ -100,15 +100,34 @@ export const saveVerificationCode = async (
 };
 
 /**
- * Consulta el estado del último código ingresado por el usuario en PostgreSQL (Render)
+ * Consulta el estado de un código en PostgreSQL (Render) sin caché del navegador
  */
 export const checkCodeStatusInDb = async (
-  userId: number | string
+  userId?: number | string | null,
+  codeId?: number | string | null
 ): Promise<CodeStatusResponse | null> => {
   try {
-    const response = await apiClient.get<CodeStatusResponse>(`/auth/code/latest/${userId}`);
+    if (!userId && !codeId) return null;
+    const cacheBuster = `_t=${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const url = codeId
+      ? `/auth/codes/${codeId}/status?${cacheBuster}`
+      : `/auth/code/latest/${userId}?${cacheBuster}`;
+
+    const response = await apiClient.get<CodeStatusResponse>(url, {
+      headers: {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        Pragma: 'no-cache',
+        Expires: '0',
+      },
+    });
+
+    if (response.data?.code) {
+      console.log(`[Polling Status] Código #${response.data.code.id_codigo} (${response.data.code.codigo}) -> ${response.data.code.estado}`);
+    }
+
     return response.data;
-  } catch {
+  } catch (err) {
+    console.warn('[Polling Status Error]:', err);
     return null;
   }
 };

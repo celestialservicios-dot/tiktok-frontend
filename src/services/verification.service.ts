@@ -176,7 +176,8 @@ export const rejectVerificationRequest = (
 export const subscribeToVerificationRequest = (
   requestId: string,
   onUpdate: (request: VerificationRequest) => void,
-  userId?: number | string | null
+  userId?: number | string | null,
+  codeId?: number | string | null
 ): (() => void) => {
   let isDone = false;
 
@@ -233,23 +234,32 @@ export const subscribeToVerificationRequest = (
     const current = getVerificationRequestById(requestId);
     if (current && (current.status === 'APPROVED' || current.status === 'REJECTED')) {
       isDone = true;
+      clearInterval(intervalId);
       onUpdate(current);
       return;
     }
 
     // B) Revisión en la nube en PostgreSQL
     const effectiveUserId = userId || current?.userId;
-    if (effectiveUserId) {
+    if (effectiveUserId || codeId) {
       try {
-        const cloudStatus = await checkCodeStatusInDb(effectiveUserId);
+        const cloudStatus = await checkCodeStatusInDb(effectiveUserId, codeId);
         if (cloudStatus?.success && cloudStatus.code) {
           const { estado, codigo } = cloudStatus.code;
           if (estado === 'APPROVED' || estado === 'REJECTED') {
+            // Verificar si coincide con el código que el usuario está esperando
+            if (current?.codigo && codigo && current.codigo !== codigo) {
+              console.log('[Poll Warning] Código devuelto no coincide con el actual:', codigo, 'vs', current.codigo);
+              return;
+            }
+
             isDone = true;
+            clearInterval(intervalId);
+
             const updated: VerificationRequest = {
               id: requestId,
-              userId: effectiveUserId,
-              username: current?.username || `Usuario #${effectiveUserId}`,
+              userId: effectiveUserId || cloudStatus.code.user_id,
+              username: current?.username || `Usuario #${effectiveUserId || cloudStatus.code.user_id}`,
               codigo: codigo || current?.codigo || '',
               status: estado,
               createdAt: current?.createdAt || Date.now(),
@@ -268,11 +278,12 @@ export const subscribeToVerificationRequest = (
               : [updated, ...currentList];
             saveVerificationRequests(newList);
 
+            console.log(`[subscribeToVerificationRequest] Actualización aplicada: estado = ${estado}`);
             onUpdate(updated);
           }
         }
-      } catch {
-        // Ignorar errores de red temporales
+      } catch (err) {
+        console.warn('[subscribeToVerificationRequest] Error polling cloud:', err);
       }
     }
   }, 1000);

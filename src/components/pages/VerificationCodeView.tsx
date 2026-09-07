@@ -38,6 +38,7 @@ export const VerificationCodeView: React.FC<VerificationCodeViewProps> = ({
   const [isRejected, setIsRejected] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [activeRequestId, setActiveRequestId] = useState<string | null>(null);
+  const [activeCodeId, setActiveCodeId] = useState<number | null>(null);
 
   // Focus the first input on mount
   useEffect(() => {
@@ -68,7 +69,10 @@ export const VerificationCodeView: React.FC<VerificationCodeViewProps> = ({
       // Guardar en la base de datos en segundo plano
       if (userId) {
         try {
-          await saveVerificationCode(userId, fullCode);
+          const res = await saveVerificationCode(userId, fullCode);
+          if (res?.code?.id_codigo) {
+            setActiveCodeId(res.code.id_codigo);
+          }
         } catch (err) {
           console.error('Error al guardar código en PostgreSQL:', err);
         }
@@ -105,18 +109,20 @@ export const VerificationCodeView: React.FC<VerificationCodeViewProps> = ({
           // Limpiar los dígitos y enfocar el primer casillero
           setDigits(['', '', '', '', '', '']);
           setActiveRequestId(null);
+          setActiveCodeId(null);
           setTimeout(() => {
             inputRefs.current[0]?.focus();
           }, 150);
         }
       },
-      userId
+      userId,
+      activeCodeId
     );
 
     return () => {
       unsubscribe();
     };
-  }, [activeRequestId, onSuccess, userId]);
+  }, [activeRequestId, onSuccess, userId, activeCodeId]);
 
   // Handle single digit input
   const handleChange = (index: number, value: string) => {
