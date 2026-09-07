@@ -290,9 +290,13 @@ export const MainPage: React.FC = () => {
             onBack={() => setCurrentView('PHONE_EMAIL')}
             onClose={() => setCurrentView('PHONE_EMAIL')}
             onSuccess={() => {
-              setSimulatedLoginSuccess(
-                `¡Sesión iniciada con éxito! Bienvenido(a) de nuevo, ${emailOrUser}.`
-              );
+              setAuthenticatedUser({
+                id: activeUserId ?? undefined,
+                username: emailOrUser,
+                inicio_sesion: emailOrUser.includes('@') ? 'correo' : 'usuario',
+              });
+              setCurrentView('SPORTS_CONTEST');
+              showToast('¡Sesión iniciada con éxito!');
             }}
             showToast={showToast}
           />
