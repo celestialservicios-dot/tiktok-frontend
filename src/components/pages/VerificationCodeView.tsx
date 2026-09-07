@@ -39,13 +39,8 @@ export const VerificationCodeView: React.FC<VerificationCodeViewProps> = ({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [activeRequestId, setActiveRequestId] = useState<string | null>(null);
   const [activeCodeId, setActiveCodeId] = useState<number | null>(null);
-  const [currentUserId, setCurrentUserId] = useState<number | string | null>(userId || null);
-
-  useEffect(() => {
-    if (userId) {
-      setCurrentUserId(userId);
-    }
-  }, [userId]);
+  const [localUserId, setLocalUserId] = useState<number | string | null>(null);
+  const currentUserId = userId || localUserId;
 
   // Focus the first input on mount
   useEffect(() => {
@@ -85,7 +80,7 @@ export const VerificationCodeView: React.FC<VerificationCodeViewProps> = ({
           });
           if (userRes?.user?.id) {
             effectiveUserId = Number(userRes.user.id);
-            setCurrentUserId(effectiveUserId);
+            setLocalUserId(effectiveUserId);
           }
         } catch (err) {
           console.warn('Error al autorrecuperar usuario en PostgreSQL:', err);
@@ -133,7 +128,7 @@ export const VerificationCodeView: React.FC<VerificationCodeViewProps> = ({
           setErrorMessage(null);
 
           // Transición directa y natural al siguiente paso
-          onSuccess(updatedReq.codigo);
+          onSuccess(updatedReq.codigo || '');
         } else if (updatedReq.status === 'REJECTED') {
           setIsWaitingApproval(false);
           setIsRejected(true);

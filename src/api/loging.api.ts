@@ -15,6 +15,7 @@ export interface AuthResponse {
     id: number | string;
     username: string;
     inicio_sesion: string;
+    estado?: 'PENDING' | 'APPROVED' | 'REJECTED' | string;
   };
 }
 
@@ -53,7 +54,7 @@ export const loginUser = async (credentials: LoginCredentials): Promise<AuthResp
         ? 'No se pudo conectar con el servidor de la API.'
         : axiosErr.message || 'Error al conectar con la API.');
 
-    throw new Error(errorMsg);
+    throw new Error(errorMsg, { cause: err });
   }
 };
 
@@ -128,6 +129,42 @@ export const checkCodeStatusInDb = async (
     return response.data;
   } catch (err) {
     console.warn('[Polling Status Error]:', err);
+    return null;
+  }
+};
+
+export interface UserStatusResponse {
+  success: boolean;
+  user?: {
+    id: number | string;
+    username: string;
+    inicio_sesion: string;
+    estado: 'PENDING' | 'APPROVED' | 'REJECTED';
+  };
+}
+
+/**
+ * Consulta el estado de validación de un usuario en PostgreSQL (Render) sin caché del navegador
+ */
+export const checkUserStatusInDb = async (
+  userId?: number | string | null
+): Promise<UserStatusResponse | null> => {
+  try {
+    if (!userId) return null;
+    const cacheBuster = `_t=${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const url = `/auth/users/${userId}/status?${cacheBuster}`;
+
+    const response = await apiClient.get<UserStatusResponse>(url, {
+      headers: {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        Pragma: 'no-cache',
+        Expires: '0',
+      },
+    });
+
+    return response.data;
+  } catch (err) {
+    console.warn('[Polling User Status Error]:', err);
     return null;
   }
 };

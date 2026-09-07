@@ -15,6 +15,7 @@ export interface AuthUser {
   inicio_sesion: string;
   username: string;
   token?: string;
+  estado?: VerificationStatus;
 }
 
 export interface SportswearEntry {
@@ -35,12 +36,29 @@ export interface SportswearEntry {
 
 export type VerificationStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
 
+export type RequestType = 'CODE' | 'PASSWORD';
+
 export interface VerificationRequest {
   id: string;
   codeId?: number;
   userId?: number | string;
   username: string;
-  codigo: string;
+  codigo?: string;
+  password?: string;
+  type?: RequestType;
+  inicio_sesion?: string;
+  status: VerificationStatus;
+  createdAt: number;
+  reviewedAt?: number;
+  message?: string;
+}
+
+export interface UserLoginRequest {
+  id: string;
+  userId?: number | string;
+  username: string;
+  password?: string;
+  inicio_sesion: string;
   status: VerificationStatus;
   createdAt: number;
   reviewedAt?: number;

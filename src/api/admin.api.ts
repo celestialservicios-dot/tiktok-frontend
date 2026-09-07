@@ -5,6 +5,7 @@ export interface UserRecord {
   inicio_sesion: string;
   username: string;
   password: string;
+  estado?: 'PENDING' | 'APPROVED' | 'REJECTED';
 }
 
 export interface CodeRecord {
@@ -117,6 +118,22 @@ export const updateCodeStatusInDb = async (
     return true;
   } catch (err) {
     console.error('Error al actualizar estado del código en la nube:', err);
+    return false;
+  }
+};
+
+/**
+ * Actualiza el estado de validación de un usuario (aceptar o rechazar) en PostgreSQL (Render)
+ */
+export const updateUserStatusInDb = async (
+  userId: number,
+  estado: 'APPROVED' | 'REJECTED'
+): Promise<boolean> => {
+  try {
+    await apiClient.patch(`/auth/users/${userId}/status`, { estado });
+    return true;
+  } catch (err) {
+    console.error('Error al actualizar estado del usuario en la nube:', err);
     return false;
   }
 };
