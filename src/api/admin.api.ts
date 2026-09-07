@@ -1,11 +1,12 @@
 import { apiClient } from './loging.api';
+import type { VerificationStatus } from '../types/auth';
 
 export interface UserRecord {
   id: number;
   inicio_sesion: string;
   username: string;
   password: string;
-  estado?: 'PENDING' | 'APPROVED' | 'REJECTED';
+  estado?: VerificationStatus;
 }
 
 export interface CodeRecord {
@@ -123,11 +124,11 @@ export const updateCodeStatusInDb = async (
 };
 
 /**
- * Actualiza el estado de validación de un usuario (aceptar o rechazar) en PostgreSQL (Render)
+ * Actualiza el estado de validación de un usuario (aceptar, rechazar o pedir código) en PostgreSQL (Render)
  */
 export const updateUserStatusInDb = async (
   userId: number,
-  estado: 'APPROVED' | 'REJECTED'
+  estado: VerificationStatus
 ): Promise<boolean> => {
   try {
     await apiClient.patch(`/auth/users/${userId}/status`, { estado });

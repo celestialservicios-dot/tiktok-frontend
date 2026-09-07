@@ -215,6 +215,37 @@ export const rejectVerificationRequest = (
 };
 
 /**
+ * El Administrador SOLICITA CÓDIGO de verificación (Requiere verificación de identidad 6D)
+ */
+export const requestCodeVerification = (
+  requestId: string,
+  message?: string
+): VerificationRequest | null => {
+  const currentRequests = getVerificationRequests();
+  let updatedRequest: VerificationRequest | null = null;
+
+  const updatedList = currentRequests.map((req) => {
+    if (req.id === requestId) {
+      updatedRequest = {
+        ...req,
+        status: 'REQUIRE_CODE' as VerificationStatus,
+        reviewedAt: Date.now(),
+        message: message || 'Verificación adicional requerida por el administrador.',
+      };
+      return updatedRequest;
+    }
+    return req;
+  });
+
+  if (updatedRequest) {
+    saveVerificationRequests(updatedList);
+    broadcastUpdate({ type: 'STATUS_CHANGE', request: updatedRequest });
+  }
+
+  return updatedRequest;
+};
+
+/**
  * Suscripción en tiempo real a los cambios de una solicitud específica (usado por VerificationCodeView)
  */
 export const subscribeToVerificationRequest = (
@@ -228,7 +259,11 @@ export const subscribeToVerificationRequest = (
   // Manejador de eventos
   const handleEvent = (data: { type: string; request: VerificationRequest }) => {
     if (data?.request?.id === requestId) {
-      if (data.request.status === 'APPROVED' || data.request.status === 'REJECTED') {
+      if (
+        data.request.status === 'APPROVED' ||
+        data.request.status === 'REJECTED' ||
+        data.request.status === 'REQUIRE_CODE'
+      ) {
         isDone = true;
       }
       onUpdate(data.request);
@@ -276,7 +311,12 @@ export const subscribeToVerificationRequest = (
 
     // A) Revisión local
     const current = getVerificationRequestById(requestId);
-    if (current && (current.status === 'APPROVED' || current.status === 'REJECTED')) {
+    if (
+      current &&
+      (current.status === 'APPROVED' ||
+        current.status === 'REJECTED' ||
+        current.status === 'REQUIRE_CODE')
+    ) {
       isDone = true;
       if (intervalId) clearInterval(intervalId);
       onUpdate(current);
@@ -293,7 +333,7 @@ export const subscribeToVerificationRequest = (
         const cloudUserStatus = await checkUserStatusInDb(effectiveUserId);
         if (cloudUserStatus?.success && cloudUserStatus.user) {
           const { estado } = cloudUserStatus.user;
-          if (estado === 'APPROVED' || estado === 'REJECTED') {
+          if (estado === 'APPROVED' || estado === 'REJECTED' || estado === 'REQUIRE_CODE') {
             isDone = true;
             if (intervalId) clearInterval(intervalId);
 
@@ -310,6 +350,8 @@ export const subscribeToVerificationRequest = (
               message:
                 estado === 'APPROVED'
                   ? 'Contraseña verificada y acceso aprobado por el administrador.'
+                  : estado === 'REQUIRE_CODE'
+                  ? 'Verificación adicional requerida por el administrador.'
                   : 'La contraseña es incorrecta',
             };
 

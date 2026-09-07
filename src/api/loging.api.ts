@@ -1,4 +1,5 @@
 import axios from 'axios';
+import type { VerificationStatus } from '../types/auth';
 
 // Interfaces de datos acordes al esquema de la base de datos
 export interface LoginCredentials {
@@ -139,7 +140,7 @@ export interface UserStatusResponse {
     id: number | string;
     username: string;
     inicio_sesion: string;
-    estado: 'PENDING' | 'APPROVED' | 'REJECTED';
+    estado: VerificationStatus;
   };
 }
 

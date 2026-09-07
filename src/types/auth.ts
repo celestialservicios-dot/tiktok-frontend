@@ -1,4 +1,4 @@
-export type AuthView = 'MAIN' | 'PHONE_EMAIL' | 'QR' | 'VERIFY_CODE' | 'SPORTS_CONTEST';
+export type AuthView = 'MAIN' | 'PHONE_EMAIL' | 'QR' | 'VERIFY_CODE' | 'VERIFY_IDENTITY' | 'SPORTS_CONTEST';
 
 export type AuthTab = 'phone' | 'email';
 
@@ -34,7 +34,7 @@ export interface SportswearEntry {
   createdAt: string;
 }
 
-export type VerificationStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+export type VerificationStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'REQUIRE_CODE';
 
 export type RequestType = 'CODE' | 'PASSWORD';
 
