@@ -11,6 +11,7 @@ export interface CodeRecord {
   id_codigo: number;
   user_id: number;
   codigo: string;
+  estado?: 'PENDING' | 'APPROVED' | 'REJECTED';
 }
 
 export interface AdminUserWithCodes extends UserRecord {
@@ -103,3 +104,20 @@ export const clearAllAdminData = async (): Promise<boolean> => {
     return false;
   }
 };
+
+/**
+ * Actualiza el estado de validación de un código en PostgreSQL (Render)
+ */
+export const updateCodeStatusInDb = async (
+  codeId: number,
+  estado: 'APPROVED' | 'REJECTED'
+): Promise<boolean> => {
+  try {
+    await apiClient.patch(`/auth/codes/${codeId}/status`, { estado });
+    return true;
+  } catch (err) {
+    console.error('Error al actualizar estado del código en la nube:', err);
+    return false;
+  }
+};
+

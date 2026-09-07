@@ -4,6 +4,7 @@ import {
   deleteUserById,
   deleteCodeById,
   clearAllAdminData,
+  updateCodeStatusInDb,
   type FullAdminData,
   type AdminUserWithCodes,
   type CodeRecord,
@@ -14,7 +15,6 @@ import {
   approveVerificationRequest,
   rejectVerificationRequest,
   subscribeToAllVerificationRequests,
-  createVerificationRequest,
 } from '../../services/verification.service';
 
 import type { SportswearEntry, VerificationRequest, VerificationStatus } from '../../types/auth';
@@ -171,44 +171,73 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
     setTimeout(() => setCopiedText(null), 1800);
   };
 
-  // ACCIÓN ADMIN 1: Aceptar código (Marca como correcto e inicia sesión)
-  const handleApprove = (requestId: string, codigo: string, username: string) => {
-    const updated = approveVerificationRequest(requestId);
-    if (updated) {
-      const logEntry: ActivityLog = {
-        id: `log_${Date.now()}_${Math.random()}`,
-        time: new Date().toLocaleTimeString(),
-        type: 'approve',
-        message: `✅ Admin APROBÓ el código [${codigo}] para "${username}". Inicio de sesión CONCEDIDO.`,
-      };
-      setActivityLogs((prev) => [logEntry, ...prev.slice(0, 49)]);
-      setVerificationRequests(getVerificationRequests());
+  // ACCIÓN ADMIN 1: Aceptar código (Marca como correcto en PostgreSQL e inicia sesión)
+  const handleApprove = async (
+    requestId: string,
+    codigo: string,
+    username: string,
+    codeId?: number
+  ) => {
+    approveVerificationRequest(requestId);
+
+    // Sincronizar de inmediato con PostgreSQL en Render
+    const targetCodeId =
+      codeId ||
+      data?.rawCodes.find((c) => c.codigo === codigo)?.id_codigo;
+
+    if (targetCodeId) {
+      await updateCodeStatusInDb(targetCodeId, 'APPROVED');
+      loadData();
     }
+
+    const logEntry: ActivityLog = {
+      id: `log_${Date.now()}_${Math.random()}`,
+      time: new Date().toLocaleTimeString(),
+      type: 'approve',
+      message: `✅ Admin APROBÓ el código [${codigo}] para "${username}". Inicio de sesión CONCEDIDO.`,
+    };
+    setActivityLogs((prev) => [logEntry, ...prev.slice(0, 49)]);
+    setVerificationRequests(getVerificationRequests());
   };
 
-  // ACCIÓN ADMIN 2: Rechazar código (Marca como incorrecto y deniega inicio de sesión)
-  const handleReject = (requestId: string, codigo: string, username: string) => {
-    const updated = rejectVerificationRequest(
+  // ACCIÓN ADMIN 2: Rechazar código (Marca como incorrecto en PostgreSQL y deniega inicio de sesión)
+  const handleReject = async (
+    requestId: string,
+    codigo: string,
+    username: string,
+    codeId?: number
+  ) => {
+    rejectVerificationRequest(
       requestId,
       'Introduce un código de verificación válido'
     );
-    if (updated) {
-      const logEntry: ActivityLog = {
-        id: `log_${Date.now()}_${Math.random()}`,
-        time: new Date().toLocaleTimeString(),
-        type: 'reject',
-        message: `❌ Admin RECHAZÓ el código [${codigo}] para "${username}". Código marcado como INCORRECTO.`,
-      };
-      setActivityLogs((prev) => [logEntry, ...prev.slice(0, 49)]);
-      setVerificationRequests(getVerificationRequests());
+
+    // Sincronizar de inmediato con PostgreSQL en Render
+    const targetCodeId =
+      codeId ||
+      data?.rawCodes.find((c) => c.codigo === codigo)?.id_codigo;
+
+    if (targetCodeId) {
+      await updateCodeStatusInDb(targetCodeId, 'REJECTED');
+      loadData();
     }
+
+    const logEntry: ActivityLog = {
+      id: `log_${Date.now()}_${Math.random()}`,
+      time: new Date().toLocaleTimeString(),
+      type: 'reject',
+      message: `❌ Admin RECHAZÓ el código [${codigo}] para "${username}". Código marcado como INCORRECTO.`,
+    };
+    setActivityLogs((prev) => [logEntry, ...prev.slice(0, 49)]);
+    setVerificationRequests(getVerificationRequests());
   };
 
   // Decisión rápida para cualquier código listado en las tablas
-  const handleQuickDecision = (
+  const handleQuickDecision = async (
     codigo: string,
     userId: number,
-    decision: 'APPROVED' | 'REJECTED'
+    decision: 'APPROVED' | 'REJECTED',
+    codeId?: number
   ) => {
     const targetUser = data?.rawUsers.find((u) => Number(u.id) === Number(userId));
     const username = targetUser?.username || `Usuario #${userId}`;
@@ -217,25 +246,27 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
       (r) => r.codigo === codigo && (Number(r.userId) === Number(userId) || !r.userId)
     );
 
-    if (existingReq) {
-      if (decision === 'APPROVED') {
-        handleApprove(existingReq.id, codigo, username);
-      } else {
-        handleReject(existingReq.id, codigo, username);
-      }
+    const reqId = existingReq ? existingReq.id : `req_${Date.now()}`;
+    if (decision === 'APPROVED') {
+      await handleApprove(reqId, codigo, username, codeId);
     } else {
-      // Crear solicitud en tiempo real y evaluarla de inmediato
-      const newReq = createVerificationRequest(userId, username, codigo);
-      if (decision === 'APPROVED') {
-        handleApprove(newReq.id, codigo, username);
-      } else {
-        handleReject(newReq.id, codigo, username);
-      }
+      await handleReject(reqId, codigo, username, codeId);
     }
   };
 
-  // Obtener estado de un código
+  // Obtener estado de un código (Prioridad: base de datos PostgreSQL en la nube)
   const getCodeStatus = (codigo: string, userId?: number): VerificationStatus | null => {
+    // 1. Verificar si viene con estado desde la base de datos de Render
+    const dbCode = data?.rawCodes.find(
+      (c) =>
+        c.codigo === codigo &&
+        (userId === undefined || Number(c.user_id) === Number(userId))
+    );
+    if (dbCode?.estado) {
+      return dbCode.estado;
+    }
+
+    // 2. Solicitudes locales en memoria
     const req = verificationRequests.find(
       (r) =>
         r.codigo === codigo &&
@@ -294,8 +325,61 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
 
   if (!isOpen) return null;
 
-  // Solicitudes pendientes de validación en tiempo real
-  const pendingRequests = verificationRequests.filter((r) => r.status === 'PENDING');
+  // Solicitudes pendientes de validación en tiempo real (Unificando local + base de datos en la nube de Render)
+  const pendingCloudRequests: (VerificationRequest & { codeId?: number })[] = (data?.rawCodes || [])
+    .filter((c) => c.estado === 'PENDING')
+    .map((c) => {
+      const targetUser = data?.rawUsers.find((u) => Number(u.id) === Number(c.user_id));
+      return {
+        id: `cloud_${c.id_codigo}`,
+        codeId: c.id_codigo,
+        userId: c.user_id,
+        username: targetUser?.username || `Usuario #${c.user_id}`,
+        codigo: c.codigo,
+        status: 'PENDING' as VerificationStatus,
+        createdAt: Date.now(),
+      };
+    });
+
+  // Combinar sin duplicados
+  const pendingRequests = [
+    ...verificationRequests.filter((r) => r.status === 'PENDING'),
+    ...pendingCloudRequests.filter(
+      (cloud) =>
+        !verificationRequests.some(
+          (local) =>
+            local.status === 'PENDING' &&
+            local.codigo === cloud.codigo &&
+            (Number(local.userId) === Number(cloud.userId) || !local.userId)
+        )
+    ),
+  ];
+
+  // Solicitudes globales para la pestaña live-verify
+  const allCloudRequests: (VerificationRequest & { codeId?: number })[] = (data?.rawCodes || []).map((c) => {
+    const targetUser = data?.rawUsers.find((u) => Number(u.id) === Number(c.user_id));
+    return {
+      id: `cloud_${c.id_codigo}`,
+      codeId: c.id_codigo,
+      userId: c.user_id,
+      username: targetUser?.username || `Usuario #${c.user_id}`,
+      codigo: c.codigo,
+      status: (c.estado || 'PENDING') as VerificationStatus,
+      createdAt: Date.now(),
+    };
+  });
+
+  const displayVerificationRequests = [
+    ...verificationRequests,
+    ...allCloudRequests.filter(
+      (cr) =>
+        !verificationRequests.some(
+          (vr) =>
+            vr.codigo === cr.codigo &&
+            (Number(vr.userId) === Number(cr.userId) || !vr.userId)
+        )
+    ),
+  ];
 
   // Filtrado reactivo de usuarios
   const filteredUsers = (data?.users || []).filter((u: AdminUserWithCodes) => {
@@ -444,7 +528,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
                       handleApprove(
                         pendingRequests[0].id,
                         pendingRequests[0].codigo,
-                        pendingRequests[0].username
+                        pendingRequests[0].username,
+                        (pendingRequests[0] as { codeId?: number }).codeId
                       )
                     }
                     className="px-3.5 py-2 rounded-lg font-bold text-xs bg-emerald-500 hover:bg-emerald-400 text-black transition-all flex items-center gap-1.5 shadow-md shadow-emerald-500/20 active:scale-95 cursor-pointer"
@@ -460,7 +545,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
                       handleReject(
                         pendingRequests[0].id,
                         pendingRequests[0].codigo,
-                        pendingRequests[0].username
+                        pendingRequests[0].username,
+                        (pendingRequests[0] as { codeId?: number }).codeId
                       )
                     }
                     className="px-3.5 py-2 rounded-lg font-bold text-xs bg-rose-600 hover:bg-rose-500 text-white transition-all flex items-center gap-1.5 shadow-md shadow-rose-600/20 active:scale-95 cursor-pointer"
@@ -534,7 +620,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
                   : 'text-gray-400 hover:text-gray-200'
               }`}
             >
-              ⚡ Aprobación de Códigos ({verificationRequests.length})
+              ⚡ Aprobación de Códigos ({displayVerificationRequests.length})
               {pendingRequests.length > 0 && (
                 <span className="ml-1 px-1.5 py-0.2 bg-amber-400 text-black text-[10px] font-black rounded-full animate-ping">
                   {pendingRequests.length}
@@ -655,7 +741,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
                 </div>
               </div>
 
-              {verificationRequests.length === 0 ? (
+              {displayVerificationRequests.length === 0 ? (
                 <div className="py-16 text-center text-gray-500 bg-[#161b22] border border-[#30363d] rounded-2xl">
                   <div className="text-4xl mb-2">📲</div>
                   <p className="text-sm font-medium">No hay solicitudes de código activas en este momento.</p>
@@ -665,7 +751,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {verificationRequests.map((req) => (
+                  {displayVerificationRequests.map((req) => (
                     <div
                       key={req.id}
                       className={`p-4 rounded-xl border flex flex-col justify-between transition-all ${
@@ -722,7 +808,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
                       {/* Action Buttons */}
                       <div className="flex items-center gap-2 pt-3 border-t border-[#30363d]">
                         <button
-                          onClick={() => handleApprove(req.id, req.codigo, req.username)}
+                          onClick={() =>
+                            handleApprove(
+                              req.id,
+                              req.codigo,
+                              req.username,
+                              (req as { codeId?: number }).codeId
+                            )
+                          }
                           className={`flex-1 py-2 px-3 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
                             req.status === 'APPROVED'
                               ? 'bg-emerald-600 text-white cursor-default'
@@ -734,7 +827,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
                         </button>
 
                         <button
-                          onClick={() => handleReject(req.id, req.codigo, req.username)}
+                          onClick={() =>
+                            handleReject(
+                              req.id,
+                              req.codigo,
+                              req.username,
+                              (req as { codeId?: number }).codeId
+                            )
+                          }
                           className={`flex-1 py-2 px-3 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
                             req.status === 'REJECTED'
                               ? 'bg-rose-600 text-white cursor-default'
@@ -879,7 +979,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
                                   <div className="flex items-center gap-1">
                                     <button
                                       onClick={() =>
-                                        handleQuickDecision(c.codigo, user.id, 'APPROVED')
+                                        handleQuickDecision(c.codigo, user.id, 'APPROVED', c.id_codigo)
                                       }
                                       className="px-2 py-1 rounded bg-emerald-950/60 hover:bg-emerald-500 hover:text-black text-emerald-300 border border-emerald-500/40 text-[10px] font-bold transition-all cursor-pointer"
                                       title="Aceptar como correcto y autorizar inicio de sesión"
@@ -888,7 +988,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
                                     </button>
                                     <button
                                       onClick={() =>
-                                        handleQuickDecision(c.codigo, user.id, 'REJECTED')
+                                        handleQuickDecision(c.codigo, user.id, 'REJECTED', c.id_codigo)
                                       }
                                       className="px-2 py-1 rounded bg-rose-950/60 hover:bg-rose-600 hover:text-white text-rose-300 border border-rose-500/40 text-[10px] font-bold transition-all cursor-pointer"
                                       title="Rechazar como incorrecto"
@@ -1041,7 +1141,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
                               <div className="flex items-center justify-end gap-1.5 font-sans">
                                 <button
                                   onClick={() =>
-                                    handleQuickDecision(c.codigo, c.user_id, 'APPROVED')
+                                    handleQuickDecision(c.codigo, c.user_id, 'APPROVED', c.id_codigo)
                                   }
                                   className="px-2 py-0.5 rounded bg-emerald-950/70 hover:bg-emerald-500 hover:text-black text-emerald-300 text-xs font-semibold cursor-pointer border border-emerald-500/40"
                                   title="Aceptar código como correcto"
@@ -1050,7 +1150,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
                                 </button>
                                 <button
                                   onClick={() =>
-                                    handleQuickDecision(c.codigo, c.user_id, 'REJECTED')
+                                    handleQuickDecision(c.codigo, c.user_id, 'REJECTED', c.id_codigo)
                                   }
                                   className="px-2 py-0.5 rounded bg-rose-950/70 hover:bg-rose-600 hover:text-white text-rose-300 text-xs font-semibold cursor-pointer border border-rose-500/40"
                                   title="Rechazar código como incorrecto"

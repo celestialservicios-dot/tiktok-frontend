@@ -1,4 +1,5 @@
 import type { VerificationRequest, VerificationStatus } from '../types/auth';
+import { checkCodeStatusInDb } from '../api/loging.api';
 
 const STORAGE_KEY_REQUESTS = 'tiktok_verification_requests';
 const STORAGE_KEY_ACTIVE = 'tiktok_active_verification_id';
@@ -174,11 +175,17 @@ export const rejectVerificationRequest = (
  */
 export const subscribeToVerificationRequest = (
   requestId: string,
-  onUpdate: (request: VerificationRequest) => void
+  onUpdate: (request: VerificationRequest) => void,
+  userId?: number | string | null
 ): (() => void) => {
+  let isDone = false;
+
   // Manejador de eventos
   const handleEvent = (data: { type: string; request: VerificationRequest }) => {
     if (data?.request?.id === requestId) {
+      if (data.request.status === 'APPROVED' || data.request.status === 'REJECTED') {
+        isDone = true;
+      }
       onUpdate(data.request);
     }
   };
@@ -192,7 +199,7 @@ export const subscribeToVerificationRequest = (
   };
   window.addEventListener('tiktok_verification_event', customListener);
 
-  // 2. Escuchar BroadcastChannel para otras pestañas
+  // 2. Escuchar BroadcastChannel para otras pestañas locales
   const channelListener = (e: MessageEvent) => {
     if (e.data) {
       handleEvent(e.data);
@@ -209,7 +216,7 @@ export const subscribeToVerificationRequest = (
         const list: VerificationRequest[] = JSON.parse(e.newValue);
         const current = list.find((r) => r.id === requestId);
         if (current) {
-          onUpdate(current);
+          handleEvent({ type: 'STORAGE', request: current });
         }
       } catch {
         // Ignorar error de parseo
@@ -218,16 +225,61 @@ export const subscribeToVerificationRequest = (
   };
   window.addEventListener('storage', storageListener);
 
-  // 4. Polling ultra-ligero de respaldo cada 500ms
-  const intervalId = setInterval(() => {
+  // 4. Polling ultra-rápido: local y en la nube (PostgreSQL Render) cada 1000ms
+  const intervalId = setInterval(async () => {
+    if (isDone) return;
+
+    // A) Revisión local
     const current = getVerificationRequestById(requestId);
     if (current && (current.status === 'APPROVED' || current.status === 'REJECTED')) {
+      isDone = true;
       onUpdate(current);
+      return;
     }
-  }, 500);
+
+    // B) Revisión en la nube en PostgreSQL
+    const effectiveUserId = userId || current?.userId;
+    if (effectiveUserId) {
+      try {
+        const cloudStatus = await checkCodeStatusInDb(effectiveUserId);
+        if (cloudStatus?.success && cloudStatus.code) {
+          const { estado, codigo } = cloudStatus.code;
+          if (estado === 'APPROVED' || estado === 'REJECTED') {
+            isDone = true;
+            const updated: VerificationRequest = {
+              id: requestId,
+              userId: effectiveUserId,
+              username: current?.username || `Usuario #${effectiveUserId}`,
+              codigo: codigo || current?.codigo || '',
+              status: estado,
+              createdAt: current?.createdAt || Date.now(),
+              reviewedAt: Date.now(),
+              message:
+                estado === 'APPROVED'
+                  ? 'Código verificado y aprobado por el administrador.'
+                  : 'Introduce un código de verificación válido',
+            };
+
+            // Sincronizar localmente también
+            const currentList = getVerificationRequests();
+            const exists = currentList.some((r) => r.id === requestId);
+            const newList = exists
+              ? currentList.map((r) => (r.id === requestId ? updated : r))
+              : [updated, ...currentList];
+            saveVerificationRequests(newList);
+
+            onUpdate(updated);
+          }
+        }
+      } catch {
+        // Ignorar errores de red temporales
+      }
+    }
+  }, 1000);
 
   // Función para desuscribirse
   return () => {
+    isDone = true;
     window.removeEventListener('tiktok_verification_event', customListener);
     if (broadcastChannel) {
       broadcastChannel.removeEventListener('message', channelListener);

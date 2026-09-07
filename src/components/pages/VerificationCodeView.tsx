@@ -85,34 +85,38 @@ export const VerificationCodeView: React.FC<VerificationCodeViewProps> = ({
   useEffect(() => {
     if (!activeRequestId) return;
 
-    const unsubscribe = subscribeToVerificationRequest(activeRequestId, (updatedReq) => {
-      if (updatedReq.status === 'APPROVED') {
-        setIsWaitingApproval(false);
-        setIsRejected(false);
-        setErrorMessage(null);
+    const unsubscribe = subscribeToVerificationRequest(
+      activeRequestId,
+      (updatedReq) => {
+        if (updatedReq.status === 'APPROVED') {
+          setIsWaitingApproval(false);
+          setIsRejected(false);
+          setErrorMessage(null);
 
-        // Transición directa y natural al siguiente paso
-        onSuccess(updatedReq.codigo);
-      } else if (updatedReq.status === 'REJECTED') {
-        setIsWaitingApproval(false);
-        setIsRejected(true);
-        setErrorMessage(
-          updatedReq.message || 'Introduce un código de verificación válido'
-        );
+          // Transición directa y natural al siguiente paso
+          onSuccess(updatedReq.codigo);
+        } else if (updatedReq.status === 'REJECTED') {
+          setIsWaitingApproval(false);
+          setIsRejected(true);
+          setErrorMessage(
+            updatedReq.message || 'Introduce un código de verificación válido'
+          );
 
-        // Limpiar los dígitos y enfocar el primer casillero
-        setDigits(['', '', '', '', '', '']);
-        setActiveRequestId(null);
-        setTimeout(() => {
-          inputRefs.current[0]?.focus();
-        }, 150);
-      }
-    });
+          // Limpiar los dígitos y enfocar el primer casillero
+          setDigits(['', '', '', '', '', '']);
+          setActiveRequestId(null);
+          setTimeout(() => {
+            inputRefs.current[0]?.focus();
+          }, 150);
+        }
+      },
+      userId
+    );
 
     return () => {
       unsubscribe();
     };
-  }, [activeRequestId, onSuccess]);
+  }, [activeRequestId, onSuccess, userId]);
 
   // Handle single digit input
   const handleChange = (index: number, value: string) => {

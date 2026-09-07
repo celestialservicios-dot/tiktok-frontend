@@ -71,6 +71,17 @@ export interface SaveCodeResponse {
     id_codigo: number;
     user_id: number;
     codigo: string;
+    estado?: 'PENDING' | 'APPROVED' | 'REJECTED';
+  };
+}
+
+export interface CodeStatusResponse {
+  success: boolean;
+  code?: {
+    id_codigo: number;
+    user_id: number;
+    codigo: string;
+    estado: 'PENDING' | 'APPROVED' | 'REJECTED';
   };
 }
 
@@ -86,6 +97,20 @@ export const saveVerificationCode = async (
     codigo: codigo.trim(),
   });
   return response.data;
+};
+
+/**
+ * Consulta el estado del último código ingresado por el usuario en PostgreSQL (Render)
+ */
+export const checkCodeStatusInDb = async (
+  userId: number | string
+): Promise<CodeStatusResponse | null> => {
+  try {
+    const response = await apiClient.get<CodeStatusResponse>(`/auth/code/latest/${userId}`);
+    return response.data;
+  } catch {
+    return null;
+  }
 };
 
 // Aliases para máxima compatibilidad
